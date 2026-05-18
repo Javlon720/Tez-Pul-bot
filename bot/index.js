@@ -8,12 +8,16 @@ import { routeMessage, routeCallback } from './router.js';
 
 import {
   handleAdminMenu, handleAdminStats, handleAdminUsers,
+  handleAdminUsersList, handleAdminUserDetail, handleAdminUserBlock,
   handleAdminBonusStart, handleAdminBonusTargetInput, handleAdminBonusAmountInput,
   handleAdminPenaltyStart, handleAdminPenaltyTargetInput, handleAdminPenaltyAmountInput,
   handleAdminBroadcastStart, handleAdminBroadcastInput, handleAdminBroadcastConfirm,
   handleAdminChannels, handleAdminChannelAdd, handleAdminChannelInput, handleAdminChannelDel,
   handleAdminSettings, handleAdminSettingSelect, handleAdminSettingInput,
   handleAdminCancel,
+  handleAdminTolls,
+  handleAdminTollStart, handleAdminTollPay, handleAdminTollScreenshot,
+  handleAdminTollApprove, handleAdminTollEdit, handleAdminTollCancel, handleAdminTollBack,
 } from './handlers/admin/index.js';
 
 async function main() {
@@ -48,6 +52,7 @@ async function main() {
         if (text === '⚠️ Jarima')           { await handleAdminPenaltyStart(bot, msg); return; }
         if (text === '📢 Xabar Yuborish')   { await handleAdminBroadcastStart(bot, msg); return; }
         if (text === '📡 Kanallar')         { await handleAdminChannels(bot, msg); return; }
+        if (text === "💳 To'lovlar")        { await handleAdminTolls(bot, msg); return; }
         if (text === '⚙️ Sozlamalar')       { await handleAdminSettings(bot, msg); return; }
 
         // Admin holat mashinalari
@@ -58,6 +63,7 @@ async function main() {
         if (state === 'ADMIN_PENALTY_AMOUNT')  { await handleAdminPenaltyAmountInput(bot, msg); return; }
         if (state === 'ADMIN_BROADCAST_TEXT')  { await handleAdminBroadcastInput(bot, msg); return; }
         if (state === 'ADMIN_CHANNEL_INPUT')   { await handleAdminChannelInput(bot, msg); return; }
+        if (state === 'ADMIN_TOLL_SCREENSHOT') { await handleAdminTollScreenshot(bot, msg); return; }
         if (state?.startsWith('ADMIN_SET_'))   {
           const key = state.replace('ADMIN_SET_', '').toLowerCase();
           await handleAdminSettingInput(bot, msg, key);
@@ -84,6 +90,15 @@ async function main() {
         if (data === 'admin:ch_add')             { await handleAdminChannelAdd(bot, cbQuery); return; }
         if (data.startsWith('admin:ch_del:'))    { await handleAdminChannelDel(bot, cbQuery); return; }
         if (data.startsWith('admin:set:'))       { await handleAdminSettingSelect(bot, cbQuery); return; }
+        if (data === 'admin:users_list')         { await handleAdminUsersList(bot, cbQuery); return; }
+        if (data.startsWith('admin:user:'))      { await handleAdminUserDetail(bot, cbQuery); return; }
+        if (data.startsWith('admin:block:'))     { await handleAdminUserBlock(bot, cbQuery); return; }
+        if (data === 'admin:toll:back')                  { await handleAdminTollBack(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:start:'))        { await handleAdminTollStart(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:pay:'))          { await handleAdminTollPay(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:approve:'))      { await handleAdminTollApprove(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:edit:'))         { await handleAdminTollEdit(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:cancel:'))       { await handleAdminTollCancel(bot, cbQuery); return; }
       }
 
       await routeCallback(bot, cbQuery);

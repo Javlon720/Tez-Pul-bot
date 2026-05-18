@@ -1,9 +1,21 @@
 'use strict';
+export {
+  handleAdminTolls,
+  handleAdminTollStart,
+  handleAdminTollPay,
+  handleAdminTollScreenshot,
+  handleAdminTollApprove,
+  handleAdminTollEdit,
+  handleAdminTollCancel,
+  handleAdminTollBack,
+} from './tolls.js';
+
 import { query, transaction } from '../../shared/db.js';
 import getText from '../../locales/index.js';
 import { fmt } from '../../shared/utils.js';
 import { getSession, saveSession, clearSession } from '../../shared/session.js';
 import { invalidateUser } from '../../services/userService.js';
+import { invalidateAllSubCache } from '../../middleware/subscription.js';
 import { getSetting, setSetting, getMinPayout } from '../../services/settingsService.js';
 
 // ─── Yordamchi: foydalanuvchini qidirish ──────────────────────────────────
@@ -29,7 +41,7 @@ export async function handleAdminMenu(bot, msg) {
         [{ text: '📊 Statistika' },    { text: '👥 Foydalanuvchilar' }],
         [{ text: '💰 Bonus' },         { text: '⚠️ Jarima' }],
         [{ text: '📢 Xabar Yuborish' },{ text: '📡 Kanallar' }],
-        [{ text: '⚙️ Sozlamalar' }],
+        [{ text: "💳 To'lovlar" },     { text: '⚙️ Sozlamalar' }],
       ],
       resize_keyboard: true,
     },
@@ -56,19 +68,116 @@ export async function handleAdminStats(bot, msg) {
   );
 }
 
-// ─── Foydalanuvchilar ro'yxati ────────────────────────────────────────────
+// ─── Foydalanuvchilar ro'yxati (inline buttons) ───────────────────────────
 export async function handleAdminUsers(bot, msg) {
   const { rows } = await query(
-    'SELECT telegram_id, first_name, username, balance, total_referrals, is_blocked FROM users ORDER BY created_at DESC LIMIT 20'
+    'SELECT telegram_id, first_name, username, is_blocked FROM users ORDER BY created_at DESC LIMIT 30'
   );
   if (!rows.length) { await bot.sendMessage(msg.chat.id, '— Foydalanuvchilar yo\'q.'); return; }
 
-  const lines = rows.map((u, i) =>
-    `${i+1}. <b>${u.first_name}</b>${u.username ? ` @${u.username}` : ''} | ID: <code>${u.telegram_id}</code>\n` +
-    `   💰 ${fmt(u.balance)} | 👥 ${u.total_referrals} ref${u.is_blocked ? ' | 🚫' : ''}`
-  ).join('\n\n');
+  const inline_keyboard = rows.map(u => [{
+    text: `${u.is_blocked ? '🚫 ' : '👤 '}${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
+    callback_data: `admin:user:${u.telegram_id}`,
+  }]);
 
-  await bot.sendMessage(msg.chat.id, `👥 <b>So'nggi 20 foydalanuvchi:</b>\n\n${lines}`, { parse_mode: 'HTML' });
+  await bot.sendMessage(msg.chat.id, `👥 <b>So'nggi 30 foydalanuvchi:</b>`, {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard },
+  });
+}
+
+// ─── Foydalanuvchilar ro'yxatiga inline qaytish ───────────────────────────
+export async function handleAdminUsersList(bot, cbQuery) {
+  await bot.answerCallbackQuery(cbQuery.id);
+  const { rows } = await query(
+    'SELECT telegram_id, first_name, username, is_blocked FROM users ORDER BY created_at DESC LIMIT 30'
+  );
+  const inline_keyboard = rows.length
+    ? rows.map(u => [{
+        text: `${u.is_blocked ? '🚫 ' : '👤 '}${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
+        callback_data: `admin:user:${u.telegram_id}`,
+      }])
+    : [[{ text: '— Bo\'sh', callback_data: 'admin:cancel' }]];
+
+  await bot.editMessageText(`👥 <b>So'nggi 30 foydalanuvchi:</b>`, {
+    chat_id: cbQuery.message.chat.id,
+    message_id: cbQuery.message.message_id,
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard },
+  });
+}
+
+// ─── Foydalanuvchi to'liq ma'lumoti ──────────────────────────────────────
+export async function handleAdminUserDetail(bot, cbQuery) {
+  const telegramId = parseInt(cbQuery.data.split(':')[2]);
+  await bot.answerCallbackQuery(cbQuery.id);
+
+  const { rows } = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+  if (!rows.length) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Foydalanuvchi topilmadi', show_alert: true }); return; }
+  const u = rows[0];
+
+  const { rows: refs } = await query(
+    `SELECT u.telegram_id, u.first_name, u.username
+     FROM referrals r
+     JOIN users u ON u.telegram_id = r.referred_id
+     WHERE r.referrer_id = $1
+     ORDER BY r.created_at DESC`,
+    [telegramId]
+  );
+
+  const refList = refs.length
+    ? refs.map(r => `  • ${r.first_name}${r.username ? ` (@${r.username})` : ` (ID: ${r.telegram_id})`}`).join('\n')
+    : '  — Hech kim yo\'q';
+
+  const statusIcon = u.is_blocked ? '🚫' : '✅';
+  const text =
+    `${statusIcon} <b>${u.first_name}${u.last_name ? ' ' + u.last_name : ''}</b>\n\n` +
+    `🆔 <b>ID:</b> <code>${u.telegram_id}</code>\n` +
+    `👤 <b>Ism:</b> ${u.first_name}${u.last_name ? ' ' + u.last_name : ''}\n` +
+    `🔗 <b>Username:</b> ${u.username ? `@${u.username}` : '—'}\n` +
+    `📱 <b>Telefon:</b> ${u.phone || '—'}\n` +
+    `💰 <b>Balans:</b> ${fmt(u.balance)} so'm\n` +
+    `📅 <b>Ro'yxatdan:</b> ${new Date(u.created_at).toLocaleDateString('ru-RU')}\n` +
+    `🕐 <b>So'nggi faollik:</b> ${new Date(u.last_active).toLocaleDateString('ru-RU')}\n\n` +
+    `👥 <b>Qo'shgan odamlar:</b> ${u.total_referrals}\n${refList}`;
+
+  const blockBtn = u.is_blocked
+    ? { text: '✅ Blockdan olish', callback_data: `admin:block:${telegramId}` }
+    : { text: '🚫 Block qilish',   callback_data: `admin:block:${telegramId}` };
+
+  await bot.editMessageText(text, {
+    chat_id: cbQuery.message.chat.id,
+    message_id: cbQuery.message.message_id,
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '⬅️ Ortga', callback_data: 'admin:users_list' },
+        blockBtn,
+      ]],
+    },
+  });
+}
+
+// ─── Foydalanuvchini block / unblock ─────────────────────────────────────
+export async function handleAdminUserBlock(bot, cbQuery) {
+  const telegramId = parseInt(cbQuery.data.split(':')[2]);
+
+  const { rows } = await query('SELECT is_blocked FROM users WHERE telegram_id = $1', [telegramId]);
+  if (!rows.length) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Topilmadi' }); return; }
+
+  const newBlocked = !rows[0].is_blocked;
+  await query('UPDATE users SET is_blocked = $1 WHERE telegram_id = $2', [newBlocked, telegramId]);
+  invalidateUser(telegramId);
+
+  await bot.answerCallbackQuery(cbQuery.id, {
+    text: newBlocked ? '🚫 Foydalanuvchi bloklandi' : '✅ Foydalanuvchi blockdan olindi',
+  });
+
+  // Detail sahifasini yangilash uchun data ni o'zgartirib chaqiramiz
+  await handleAdminUserDetail(bot, {
+    ...cbQuery,
+    data: `admin:user:${telegramId}`,
+  });
 }
 
 // ─── Bonus: step 1 ────────────────────────────────────────────────────────
@@ -253,6 +362,7 @@ export async function handleAdminChannelInput(bot, msg) {
     const chat = await bot.getChat(input);
     const url  = chat.username ? `https://t.me/${chat.username}` : input;
     await query('INSERT INTO subscription_channels (tg_id, name, url) VALUES ($1, $2, $3)', [String(chat.id), chat.title || chat.username || input, url]);
+    invalidateAllSubCache();
     await bot.sendMessage(msg.chat.id, getText('uz', 'channel_added'));
   } catch (_) {
     await bot.sendMessage(msg.chat.id, getText('uz', 'channel_invalid'));

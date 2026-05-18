@@ -5,7 +5,7 @@ import { upsertUser, getFreshUser, touchActive } from './services/userService.js
 import { checkSubscription, buildSubKeyboard } from './middleware/subscription.js';
 import { showMainMenu } from './helpers.js';
 
-import { handleStart, handleLangSelect, handleCheckSub }       from './handlers/start.js';
+import { handleStart, handleLangSelect, handleCheckSub, handleCaptchaCallback } from './handlers/start.js';
 import { handlePhoneContact, handlePhoneText }                  from './handlers/phone.js';
 import { handleShare }                                          from './handlers/share.js';
 import { handleInfo }                                           from './handlers/info.js';
@@ -32,6 +32,15 @@ export async function routeMessage(bot, msg) {
   const session = getSession(telegramId);
   const state   = session?.current_state;
   const lang    = user.lang || 'uz';
+
+  // Captcha — javob inline tugma orqali keladi (routeCallback da), matn kelsa e'tibor berma
+  if (state === 'CAPTCHA') return;
+
+  // Captcha muddati o'tgan — faqat /start ishlaydi
+  if (state === 'CAPTCHA_EXPIRED') {
+    await bot.sendMessage(chatId, getText(lang, 'captcha_expired'), { parse_mode: 'HTML' });
+    return;
+  }
 
   // Telefon holati
   if (state === 'PHONE') {
@@ -78,11 +87,16 @@ export async function routeCallback(bot, cbQuery) {
 
   if (data.startsWith('lang:'))       return handleLangSelect(bot, cbQuery);
   if (data === 'check_sub')           return handleCheckSub(bot, cbQuery);
+  if (data.startsWith('captcha:'))    return handleCaptchaCallback(bot, cbQuery, user);
   if (!user.is_verified) { await bot.answerCallbackQuery(cbQuery.id); return; }
 
-  if (data.startsWith('spin:')) {
-    const ok = await checkSubscription(bot, telegramId);
-    if (!ok) { await bot.answerCallbackQuery(cbQuery.id, { text: getText(lang, 'sub_required'), show_alert: true }); return; }
+  // Barcha verified user callbacklari uchun obuna tekshiruvi
+  const subOk = await checkSubscription(bot, telegramId);
+  if (!subOk) {
+    const kb = await buildSubKeyboard(lang);
+    await bot.answerCallbackQuery(cbQuery.id);
+    await bot.sendMessage(cbQuery.message.chat.id, getText(lang, 'sub_required'), { reply_markup: kb });
+    return;
   }
 
   if (data.startsWith('lang_change:')) return handleLangChangeCallback(bot, cbQuery);

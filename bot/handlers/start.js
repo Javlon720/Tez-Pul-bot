@@ -7,6 +7,120 @@ import { checkSubscription, buildSubKeyboard, invalidateSubCache } from '../midd
 import { storePending, processReferral } from '../services/referralService.js';
 import { showMainMenu, deletePrevMsg } from '../helpers.js';
 
+// ─── Captcha timer'lari (telegramId → timeoutId) ──────────────────────────
+const captchaTimers = new Map();
+
+function genCaptcha() {
+  const ops = ['+', '-', '×'];
+  const op  = ops[Math.floor(Math.random() * ops.length)];
+  let a, b, answer;
+  if (op === '+') {
+    a = Math.floor(Math.random() * 20) + 1;
+    b = Math.floor(Math.random() * 20) + 1;
+    answer = a + b;
+  } else if (op === '-') {
+    a = Math.floor(Math.random() * 20) + 10;
+    b = Math.floor(Math.random() * (a - 1)) + 1;
+    answer = a - b;
+  } else {
+    a = Math.floor(Math.random() * 8) + 2;
+    b = Math.floor(Math.random() * 8) + 2;
+    answer = a * b;
+  }
+  return { a, op, b, answer };
+}
+
+function genChoices(answer) {
+  const used = new Set([answer]);
+  const wrongs = [];
+  let tries = 0;
+  while (wrongs.length < 3 && tries < 60) {
+    tries++;
+    const delta = (Math.floor(Math.random() * 8) + 1) * (Math.random() < 0.5 ? 1 : -1);
+    const w = answer + delta;
+    if (w > 0 && !used.has(w)) { used.add(w); wrongs.push(w); }
+  }
+  // Fisher-Yates shuffle
+  const all = [answer, ...wrongs];
+  for (let i = all.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [all[i], all[j]] = [all[j], all[i]];
+  }
+  return all;
+}
+
+export function clearCaptchaTimer(telegramId) {
+  const id = captchaTimers.get(telegramId);
+  if (id) { clearTimeout(id); captchaTimers.delete(telegramId); }
+}
+
+async function sendCaptcha(bot, chatId, telegramId, lang) {
+  const { a, op, b, answer } = genCaptcha();
+  const choices = genChoices(answer);
+
+  // 2 × 2 inline tugmalar
+  const inline_keyboard = [
+    choices.slice(0, 2).map(n => ({ text: String(n), callback_data: `captcha:${n}` })),
+    choices.slice(2, 4).map(n => ({ text: String(n), callback_data: `captcha:${n}` })),
+  ];
+
+  const sentMsg = await bot.sendMessage(
+    chatId,
+    getText(lang, 'captcha_prompt', { a, op, b }),
+    { parse_mode: 'HTML', reply_markup: { inline_keyboard } }
+  );
+
+  saveSession(telegramId, {
+    current_state:   'CAPTCHA',
+    last_message_id: sentMsg.message_id,
+    state_data:      { answer, lang },
+  });
+
+  const timerId = setTimeout(async () => {
+    captchaTimers.delete(telegramId);
+    bot.editMessageText(
+      getText(lang, 'captcha_expired'),
+      { chat_id: chatId, message_id: sentMsg.message_id, parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }
+    ).catch(() => {});
+    saveSession(telegramId, { current_state: 'CAPTCHA_EXPIRED' });
+  }, 60_000);
+
+  captchaTimers.set(telegramId, timerId);
+}
+
+export async function handleCaptchaCallback(bot, cbQuery, user) {
+  const telegramId = cbQuery.from.id;
+  const chatId     = cbQuery.message.chat.id;
+  const session    = getSession(telegramId) || {};
+  const { answer, lang: sessionLang } = session.state_data || {};
+  const lang   = sessionLang || user?.lang || 'uz';
+  const chosen = parseInt(cbQuery.data.split(':')[1], 10);
+
+  if (isNaN(chosen) || chosen !== answer) {
+    await bot.answerCallbackQuery(cbQuery.id, { text: getText(lang, 'captcha_wrong'), show_alert: true });
+    return;
+  }
+
+  clearCaptchaTimer(telegramId);
+  await bot.answerCallbackQuery(cbQuery.id, { text: getText(lang, 'captcha_passed') });
+
+  // Tugmalarni olib tashla
+  bot.editMessageReplyMarkup(
+    { inline_keyboard: [] },
+    { chat_id: chatId, message_id: cbQuery.message.message_id }
+  ).catch(() => {});
+
+  // Telefon so'rash bosqichiga o'tish
+  const sentMsg = await bot.sendMessage(chatId, getText(lang, 'phone_request'), {
+    reply_markup: {
+      keyboard: [[{ text: getText(lang, 'phone_share_button'), request_contact: true }]],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  });
+  saveSession(telegramId, { current_state: 'PHONE', last_message_id: sentMsg.message_id });
+}
+
 export async function handleStart(bot, msg) {
   const chatId     = msg.chat.id;
   const telegramId = msg.from.id;
@@ -30,6 +144,9 @@ export async function handleStart(bot, msg) {
     await bot.sendMessage(chatId, getText(user.lang || 'uz', 'blocked'));
     return;
   }
+
+  // Avval captcha timer'ni tozala (agar oldingi urinish bo'lsa)
+  clearCaptchaTimer(telegramId);
 
   const session = getSession(telegramId) || {};
   await deletePrevMsg(bot, chatId, session);
@@ -76,14 +193,8 @@ export async function handleLangSelect(bot, cbQuery) {
   await bot.answerCallbackQuery(cbQuery.id);
   await bot.deleteMessage(chatId, cbQuery.message.message_id).catch(() => {});
 
-  // Telefon so'ra
-  const sentMsg = await bot.sendMessage(chatId, getText(lang, 'phone_request'), {
-    reply_markup: {
-      keyboard: [[{ text: getText(lang, 'phone_share_button'), request_contact: true }]],
-      resize_keyboard: true, one_time_keyboard: true,
-    },
-  });
-  saveSession(telegramId, { current_state: 'PHONE', last_message_id: sentMsg.message_id });
+  // Captcha ko'rsat (keyin telefon so'raladi)
+  await sendCaptcha(bot, chatId, telegramId, lang);
 }
 
 export async function handleCheckSub(bot, cbQuery) {

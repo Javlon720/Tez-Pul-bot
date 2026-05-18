@@ -22,7 +22,12 @@ export async function checkSubscription(bot, telegramId) {
         subCache.set(telegramId, { result: false, ts: Date.now() });
         return false;
       }
-    } catch (_) {}
+    } catch (err) {
+      // Bot kanalda admin bo'lmasa yoki kanal topilmasa — obuna yo'q deb hisobla
+      console.warn(`[Sub] getChatMember xato (ch=${ch.tg_id}, user=${telegramId}):`, err.message);
+      subCache.set(telegramId, { result: false, ts: Date.now() });
+      return false;
+    }
   }
 
   subCache.set(telegramId, { result: true, ts: Date.now() });
@@ -31,6 +36,10 @@ export async function checkSubscription(bot, telegramId) {
 
 export function invalidateSubCache(telegramId) {
   subCache.delete(telegramId);
+}
+
+export function invalidateAllSubCache() {
+  subCache.clear();
 }
 
 export async function buildSubKeyboard(lang) {

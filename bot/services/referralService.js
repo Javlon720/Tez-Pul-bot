@@ -16,7 +16,7 @@ export function storePending(userId, referrerId) {
 export async function processReferral(bot, userId) {
   const referrerId = pending.get(userId);
   if (!referrerId) return;
-  pending.delete(userId);
+  pending.delete(userId); // ikki marta ishlashini oldini olish
 
   const bonus = await getBonusDirect();
 
