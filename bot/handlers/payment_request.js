@@ -112,8 +112,8 @@ export async function handlePayReqAmount(bot, cbQuery, user) {
   const session = getSession(cbQuery.from.id) || {};
   const msgId   = cbQuery.message.message_id;
   const min     = await getMinPayout();
-  const { rows } = await query('SELECT unpaid_amount FROM users WHERE telegram_id = $1', [user.telegram_id]);
-  const avail   = parseInt(rows[0]?.unpaid_amount || 0);
+  const { rows } = await query('SELECT balance FROM users WHERE telegram_id = $1', [user.telegram_id]);
+  const avail   = parseInt(rows[0]?.balance || 0);
 
   await promptField(bot, cbQuery.message.chat.id, msgId,
     `💰 <b>Chiqarib olmoqchi bo'lgan summani kiriting:</b>\n\n` +

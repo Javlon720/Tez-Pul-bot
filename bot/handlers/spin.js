@@ -188,7 +188,7 @@ export async function handleSpinPlay(bot, cbQuery, user) {
     }
 
     // Betni yechi
-    await query('UPDATE users SET balance = balance - $1 WHERE telegram_id = $2', [amount, telegramId]);
+    await query('UPDATE users SET balance = balance - $1, unpaid_amount = GREATEST(unpaid_amount - $1, 0) WHERE telegram_id = $2', [amount, telegramId]);
 
     // Dice animatsiyasi
     const diceMsg = await bot.sendDice(chatId, { emoji: game.emoji });
@@ -200,7 +200,7 @@ export async function handleSpinPlay(bot, cbQuery, user) {
 
     await transaction(async (client) => {
       if (isWin) {
-        await client.query('UPDATE users SET balance = balance + $1 WHERE telegram_id = $2', [prize, telegramId]);
+        await client.query('UPDATE users SET balance = balance + $1, unpaid_amount = unpaid_amount + $1 WHERE telegram_id = $2', [prize, telegramId]);
       }
       await client.query(
         `INSERT INTO spin_sessions (user_id, game, bet_amount, result, prize_amount, dice_value)

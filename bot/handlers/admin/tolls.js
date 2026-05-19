@@ -179,7 +179,7 @@ export async function handleAdminTollApprove(bot, cbQuery) {
 
   await query(`UPDATE payment_requests SET status = 'approved' WHERE id = $1`, [reqId]);
   await query(
-    `UPDATE users SET paid_amount = paid_amount + $1, unpaid_amount = GREATEST(unpaid_amount - $1, 0) WHERE telegram_id = $2`,
+    `UPDATE users SET paid_amount = paid_amount + $1, unpaid_amount = GREATEST(unpaid_amount - $1, 0), balance = GREATEST(balance - $1, 0) WHERE telegram_id = $2`,
     [r.amount, r.user_id]
   );
   await query(
