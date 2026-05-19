@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS payment_requests (
+  id          SERIAL PRIMARY KEY,
+  user_id     BIGINT NOT NULL REFERENCES users(telegram_id),
+  card_number VARCHAR(20) NOT NULL,
+  full_name   VARCHAR(255) NOT NULL,
+  amount      BIGINT NOT NULL,
+  status      VARCHAR(20) NOT NULL DEFAULT 'pending',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pay_req_user   ON payment_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_pay_req_status ON payment_requests(status);
+
 -- Default settings
 INSERT INTO settings (key, value) VALUES
   ('min_payout',    '5000'),

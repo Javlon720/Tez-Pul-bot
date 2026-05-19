@@ -1,12 +1,14 @@
 'use strict';
 export {
   handleAdminTolls,
-  handleAdminTollStart,
+  handleAdminTollReq,
   handleAdminTollPay,
   handleAdminTollScreenshot,
   handleAdminTollApprove,
   handleAdminTollEdit,
-  handleAdminTollCancel,
+  handleAdminTollBlock,
+  handleAdminTollUnblock,
+  handleAdminTollReblock,
   handleAdminTollBack,
 } from './tolls.js';
 
@@ -68,43 +70,81 @@ export async function handleAdminStats(bot, msg) {
   );
 }
 
-// ─── Foydalanuvchilar ro'yxati (inline buttons) ───────────────────────────
-export async function handleAdminUsers(bot, msg) {
-  const { rows } = await query(
-    'SELECT telegram_id, first_name, username, is_blocked FROM users ORDER BY created_at DESC LIMIT 30'
-  );
-  if (!rows.length) { await bot.sendMessage(msg.chat.id, '— Foydalanuvchilar yo\'q.'); return; }
+const PAGE_SIZE = 15;
 
-  const inline_keyboard = rows.map(u => [{
-    text: `${u.is_blocked ? '🚫 ' : '👤 '}${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
+async function buildUsersPage(page = 0) {
+  const offset = page * PAGE_SIZE;
+  const [stats, users, total] = await Promise.all([
+    query(`SELECT
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE last_active > NOW() - INTERVAL '24 hours') AS active,
+      COUNT(*) FILTER (WHERE last_active <= NOW() - INTERVAL '24 hours') AS inactive
+      FROM users`),
+    query(
+      `SELECT telegram_id, first_name, username, is_blocked
+       FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+      [PAGE_SIZE, offset]
+    ),
+    query('SELECT COUNT(*) AS c FROM users'),
+  ]);
+  return { stats: stats.rows[0], users: users.rows, totalCount: parseInt(total.rows[0].c), page };
+}
+
+// ─── Foydalanuvchilar ro'yxati ────────────────────────────────────────────────
+export async function handleAdminUsers(bot, msg) {
+  const { stats, users, totalCount } = await buildUsersPage(0);
+
+  const inline_keyboard = users.map(u => [{
+    text: `${u.is_blocked ? '🚫' : '👤'} ${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
     callback_data: `admin:user:${u.telegram_id}`,
   }]);
 
-  await bot.sendMessage(msg.chat.id, `👥 <b>So'nggi 30 foydalanuvchi:</b>`, {
-    parse_mode: 'HTML',
-    reply_markup: { inline_keyboard },
-  });
+  const nav = [];
+  if (totalCount > PAGE_SIZE) nav.push({ text: `➡️ Keyingi`, callback_data: `admin:users_page:1` });
+  if (nav.length) inline_keyboard.push(nav);
+
+  await bot.sendMessage(msg.chat.id,
+    `👥 <b>Foydalanuvchilar</b>\n\n` +
+    `📊 Jami: <b>${totalCount} ta</b>\n` +
+    `🟢 Faol (24s): <b>${stats.active} ta</b>\n` +
+    `🔴 Faol emas: <b>${stats.inactive} ta</b>`,
+    { parse_mode: 'HTML', reply_markup: { inline_keyboard } }
+  );
 }
 
-// ─── Foydalanuvchilar ro'yxatiga inline qaytish ───────────────────────────
+// ─── Foydalanuvchilar sahifa (inline) ────────────────────────────────────────
 export async function handleAdminUsersList(bot, cbQuery) {
   await bot.answerCallbackQuery(cbQuery.id);
-  const { rows } = await query(
-    'SELECT telegram_id, first_name, username, is_blocked FROM users ORDER BY created_at DESC LIMIT 30'
-  );
-  const inline_keyboard = rows.length
-    ? rows.map(u => [{
-        text: `${u.is_blocked ? '🚫 ' : '👤 '}${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
-        callback_data: `admin:user:${u.telegram_id}`,
-      }])
-    : [[{ text: '— Bo\'sh', callback_data: 'admin:cancel' }]];
+  await renderUsersPage(bot, cbQuery.message.chat.id, cbQuery.message.message_id, 0);
+}
 
-  await bot.editMessageText(`👥 <b>So'nggi 30 foydalanuvchi:</b>`, {
-    chat_id: cbQuery.message.chat.id,
-    message_id: cbQuery.message.message_id,
-    parse_mode: 'HTML',
+export async function handleAdminUsersPage(bot, cbQuery) {
+  const page = parseInt(cbQuery.data.split(':')[2]) || 0;
+  await bot.answerCallbackQuery(cbQuery.id);
+  await renderUsersPage(bot, cbQuery.message.chat.id, cbQuery.message.message_id, page);
+}
+
+async function renderUsersPage(bot, chatId, msgId, page) {
+  const { stats, users, totalCount } = await buildUsersPage(page);
+
+  const inline_keyboard = users.map(u => [{
+    text: `${u.is_blocked ? '🚫' : '👤'} ${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
+    callback_data: `admin:user:${u.telegram_id}`,
+  }]);
+
+  const nav = [];
+  if (page > 0) nav.push({ text: '⬅️ Oldingi', callback_data: `admin:users_page:${page - 1}` });
+  if ((page + 1) * PAGE_SIZE < totalCount) nav.push({ text: '➡️ Keyingi', callback_data: `admin:users_page:${page + 1}` });
+  if (nav.length) inline_keyboard.push(nav);
+
+  const text =
+    `👥 <b>Foydalanuvchilar</b> (${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, totalCount)} / ${totalCount})\n\n` +
+    `🟢 Faol (24s): <b>${stats.active}</b> | 🔴 Faol emas: <b>${stats.inactive}</b>`;
+
+  await bot.editMessageText(text, {
+    chat_id: chatId, message_id: msgId, parse_mode: 'HTML',
     reply_markup: { inline_keyboard },
-  });
+  }).catch(() => {});
 }
 
 // ─── Foydalanuvchi to'liq ma'lumoti ──────────────────────────────────────
@@ -360,14 +400,59 @@ export async function handleAdminChannelInput(bot, msg) {
   const input = msg.text?.trim();
   try {
     const chat = await bot.getChat(input);
-    const url  = chat.username ? `https://t.me/${chat.username}` : input;
-    await query('INSERT INTO subscription_channels (tg_id, name, url) VALUES ($1, $2, $3)', [String(chat.id), chat.title || chat.username || input, url]);
+    let url = chat.username
+      ? `https://t.me/${chat.username}`
+      : await bot.exportChatInviteLink(chat.id).catch(() => null);
+    const tgId = String(chat.id);
+    const name = chat.title || chat.username || input;
+    await query('INSERT INTO subscription_channels (tg_id, name, url) VALUES ($1, $2, $3)', [tgId, name, url]);
     invalidateAllSubCache();
     await bot.sendMessage(msg.chat.id, getText('uz', 'channel_added'));
+    clearSession(msg.from.id);
+
+    // Barcha verified userlarga kanal haqida xabar yuborish (background)
+    broadcastNewChannel(bot, { tg_id: tgId, name, url }).catch(() => {});
   } catch (_) {
     await bot.sendMessage(msg.chat.id, getText('uz', 'channel_invalid'));
+    clearSession(msg.from.id);
   }
-  clearSession(msg.from.id);
+}
+
+async function broadcastNewChannel(bot, ch) {
+  const { rows: users } = await query(
+    'SELECT telegram_id, lang FROM users WHERE is_verified = true AND NOT is_blocked'
+  );
+  if (!users.length) return;
+
+  const chBtn = { text: `📢 ${ch.name}` };
+  if (ch.url && ch.url.startsWith('http')) chBtn.url = ch.url;
+  const kb = {
+    inline_keyboard: [
+      [chBtn],
+      [{ text: '✅ Obunani tekshirish', callback_data: 'check_sub' }],
+    ],
+  };
+
+  for (let i = 0; i < users.length; i++) {
+    const u = users[i];
+    const lang = u.lang || 'uz';
+    const text =
+      lang === 'ru'
+        ? `📢 <b>Добавлен новый обязательный канал!</b>\n\n` +
+          `Подпишитесь на <b>${ch.name}</b>, чтобы продолжить использование бота.`
+        : lang === 'en'
+        ? `📢 <b>A new required channel has been added!</b>\n\n` +
+          `Subscribe to <b>${ch.name}</b> to continue using the bot.`
+        : `📢 <b>Yangi majburiy kanal qo'shildi!</b>\n\n` +
+          `Botdan foydalanishni davom ettirish uchun <b>${ch.name}</b> kanaliga obuna bo'ling.`;
+
+    // Keyboard o'chirish + xabar yuborish
+    const rm = await bot.sendMessage(u.telegram_id, '🔒', { reply_markup: { remove_keyboard: true } }).catch(() => null);
+    if (rm) await bot.deleteMessage(u.telegram_id, rm.message_id).catch(() => {});
+    await bot.sendMessage(u.telegram_id, text, { parse_mode: 'HTML', reply_markup: kb }).catch(() => {});
+
+    if ((i + 1) % 25 === 0) await new Promise(r => setTimeout(r, 1000));
+  }
 }
 
 export async function handleAdminChannelDel(bot, cbQuery) {

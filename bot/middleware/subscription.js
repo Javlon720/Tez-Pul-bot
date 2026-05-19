@@ -46,7 +46,11 @@ export async function buildSubKeyboard(lang) {
   const { rows } = await query(
     'SELECT tg_id, name, url FROM subscription_channels WHERE is_active = true'
   );
-  const buttons = rows.map(ch => [{ text: `📢 ${ch.name}`, url: ch.url }]);
+  const buttons = rows.map(ch => {
+    const btn = { text: `📢 ${ch.name}` };
+    if (ch.url && ch.url.startsWith('http')) btn.url = ch.url;
+    return [btn];
+  });
   buttons.push([{ text: getText(lang, 'channel_check_button'), callback_data: 'check_sub' }]);
   return { inline_keyboard: buttons };
 }

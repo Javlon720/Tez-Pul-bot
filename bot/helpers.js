@@ -10,8 +10,9 @@ export async function showMainMenu(bot, chatId, user) {
       parse_mode: 'HTML',
       reply_markup: {
         keyboard: [
-          [{ text: getText(lang, 'btn_share') },  { text: getText(lang, 'btn_info') }],
-          [{ text: getText(lang, 'btn_report') }, { text: getText(lang, 'btn_spin') }],
+          [{ text: getText(lang, 'btn_share') },   { text: getText(lang, 'btn_info') }],
+          [{ text: getText(lang, 'btn_report') },  { text: getText(lang, 'btn_spin') }],
+          [{ text: getText(lang, 'btn_pay_req') }],
           [{ text: getText(lang, 'btn_lang') }],
         ],
         resize_keyboard: true,

@@ -15,6 +15,12 @@ import {
   handleSpinEntry, handleSpinGameSelect, handleSpinBetInput,
   handleSpinPlay, handleSpinAgain, handleSpinChoose, handleSpinBack,
 } from './handlers/spin.js';
+import {
+  handlePaymentRequest,
+  handlePayReqCard, handlePayReqName, handlePayReqAmount,
+  handlePayReqBack, handlePayReqEdit, handlePayReqConfirm, handlePayReqCancel,
+  handlePayReqCardInput, handlePayReqNameInput, handlePayReqAmountInput,
+} from './handlers/payment_request.js';
 
 const SKIP_SUB = new Set(['LANG_SELECTION', 'PHONE', 'CHANNEL_CHECK']);
 
@@ -55,9 +61,17 @@ export async function routeMessage(bot, msg) {
   const ok = await checkSubscription(bot, telegramId);
   if (!ok) {
     const kb = await buildSubKeyboard(lang);
-    await bot.sendMessage(chatId, getText(lang, 'sub_required'), { reply_markup: kb });
+    // Keyboard tugmalarini o'chirish
+    const rm = await bot.sendMessage(chatId, '🔒', { reply_markup: { remove_keyboard: true } });
+    await bot.deleteMessage(chatId, rm.message_id).catch(() => {});
+    await bot.sendMessage(chatId, getText(lang, 'sub_required'), { parse_mode: 'HTML', reply_markup: kb });
     return;
   }
+
+  // Pay req states
+  if (state === 'PAY_REQ_CARD')   return handlePayReqCardInput(bot, msg);
+  if (state === 'PAY_REQ_NAME')   return handlePayReqNameInput(bot, msg);
+  if (state === 'PAY_REQ_AMOUNT') return handlePayReqAmountInput(bot, msg);
 
   // Spin bet input
   if (state === 'WAITING_SPIN_BET' && msg.text && !msg.text.startsWith('/')) {
@@ -68,11 +82,12 @@ export async function routeMessage(bot, msg) {
   const text = msg.text || '';
   const t    = (key) => getText(lang, key);
 
-  if (text === t('btn_share'))  return handleShare(bot, msg, user);
-  if (text === t('btn_info'))   return handleInfo(bot, msg, user);
-  if (text === t('btn_report')) { const f = await getFreshUser(telegramId); return handleReport(bot, msg, f); }
-  if (text === t('btn_spin'))   { const f = await getFreshUser(telegramId); return handleSpinEntry(bot, msg, f); }
-  if (text === t('btn_lang'))   return handleLangChange(bot, msg, user);
+  if (text === t('btn_pay_req')) return handlePaymentRequest(bot, msg, user);
+  if (text === t('btn_share'))   return handleShare(bot, msg, user);
+  if (text === t('btn_info'))    return handleInfo(bot, msg, user);
+  if (text === t('btn_report'))  { const f = await getFreshUser(telegramId); return handleReport(bot, msg, f); }
+  if (text === t('btn_spin'))    { const f = await getFreshUser(telegramId); return handleSpinEntry(bot, msg, f); }
+  if (text === t('btn_lang'))    return handleLangChange(bot, msg, user);
 }
 
 export async function routeCallback(bot, cbQuery) {
@@ -98,6 +113,14 @@ export async function routeCallback(bot, cbQuery) {
     await bot.sendMessage(cbQuery.message.chat.id, getText(lang, 'sub_required'), { reply_markup: kb });
     return;
   }
+
+  if (data === 'pay_req:card')    return handlePayReqCard(bot, cbQuery);
+  if (data === 'pay_req:name')    return handlePayReqName(bot, cbQuery);
+  if (data === 'pay_req:amount')  return handlePayReqAmount(bot, cbQuery, user);
+  if (data === 'pay_req:back')    return handlePayReqBack(bot, cbQuery);
+  if (data === 'pay_req:edit')    return handlePayReqEdit(bot, cbQuery);
+  if (data === 'pay_req:confirm') return handlePayReqConfirm(bot, cbQuery, user);
+  if (data === 'pay_req:cancel')  return handlePayReqCancel(bot, cbQuery);
 
   if (data.startsWith('lang_change:')) return handleLangChangeCallback(bot, cbQuery);
   if (data.startsWith('spin:game:'))   return handleSpinGameSelect(bot, cbQuery, user);

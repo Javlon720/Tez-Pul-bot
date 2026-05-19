@@ -21,11 +21,12 @@ const uz = {
 
   // Bosh menyu
   main_menu:  '👇 Asosiy menyu\n\n💰 Balansingiz: <b>{balance} so\'m</b>',
-  btn_share:  '👥 Do\'stlar',
-  btn_info:   'ℹ️ Ma\'lumot',
-  btn_report: '📊 Hisobot',
-  btn_spin:   '🎰 Spin',
-  btn_lang:   '🌐 Til',
+  btn_share:   '👥 Do\'stlar',
+  btn_info:    'ℹ️ Ma\'lumot',
+  btn_report:  '📊 Hisobot',
+  btn_spin:    '🎰 Spin',
+  btn_lang:    '🌐 Til',
+  btn_pay_req: '📋 To\'lovga murojaat',
 
   // Referal
   referral_info:   '👥 <b>Referal tizimi</b>\n\n🔗 Sizning havolangiz:\n<code>https://t.me/{username}?start=ref_{userId}</code>\n\n👫 Taklif qilganlar: <b>{referrals} ta</b>\n💰 Balans: <b>{balance} so\'m</b>\n\n📌 Har yangi a\'zo sizga <b>+{bonus} so\'m</b> keltiradi!',

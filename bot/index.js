@@ -8,7 +8,7 @@ import { routeMessage, routeCallback } from './router.js';
 
 import {
   handleAdminMenu, handleAdminStats, handleAdminUsers,
-  handleAdminUsersList, handleAdminUserDetail, handleAdminUserBlock,
+  handleAdminUsersList, handleAdminUsersPage, handleAdminUserDetail, handleAdminUserBlock,
   handleAdminBonusStart, handleAdminBonusTargetInput, handleAdminBonusAmountInput,
   handleAdminPenaltyStart, handleAdminPenaltyTargetInput, handleAdminPenaltyAmountInput,
   handleAdminBroadcastStart, handleAdminBroadcastInput, handleAdminBroadcastConfirm,
@@ -16,9 +16,18 @@ import {
   handleAdminSettings, handleAdminSettingSelect, handleAdminSettingInput,
   handleAdminCancel,
   handleAdminTolls,
-  handleAdminTollStart, handleAdminTollPay, handleAdminTollScreenshot,
-  handleAdminTollApprove, handleAdminTollEdit, handleAdminTollCancel, handleAdminTollBack,
+  handleAdminTollReq, handleAdminTollPay, handleAdminTollScreenshot,
+  handleAdminTollApprove, handleAdminTollEdit,
+  handleAdminTollBlock, handleAdminTollUnblock, handleAdminTollReblock,
+  handleAdminTollBack,
 } from './handlers/admin/index.js';
+
+import {
+  handlePaymentRequest,
+  handlePayReqCard, handlePayReqName, handlePayReqAmount,
+  handlePayReqBack, handlePayReqEdit, handlePayReqConfirm, handlePayReqCancel,
+  handlePayReqCardInput, handlePayReqNameInput, handlePayReqAmountInput,
+} from './handlers/payment_request.js';
 
 async function main() {
   await connectWithRetry();
@@ -64,6 +73,7 @@ async function main() {
         if (state === 'ADMIN_BROADCAST_TEXT')  { await handleAdminBroadcastInput(bot, msg); return; }
         if (state === 'ADMIN_CHANNEL_INPUT')   { await handleAdminChannelInput(bot, msg); return; }
         if (state === 'ADMIN_TOLL_SCREENSHOT') { await handleAdminTollScreenshot(bot, msg); return; }
+        if (state === 'ADMIN_TOLL_APPROVE')    { await handleAdminTollScreenshot(bot, msg); return; }
         if (state?.startsWith('ADMIN_SET_'))   {
           const key = state.replace('ADMIN_SET_', '').toLowerCase();
           await handleAdminSettingInput(bot, msg, key);
@@ -94,11 +104,14 @@ async function main() {
         if (data.startsWith('admin:user:'))      { await handleAdminUserDetail(bot, cbQuery); return; }
         if (data.startsWith('admin:block:'))     { await handleAdminUserBlock(bot, cbQuery); return; }
         if (data === 'admin:toll:back')                  { await handleAdminTollBack(bot, cbQuery); return; }
-        if (data.startsWith('admin:toll:start:'))        { await handleAdminTollStart(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:req:'))          { await handleAdminTollReq(bot, cbQuery); return; }
         if (data.startsWith('admin:toll:pay:'))          { await handleAdminTollPay(bot, cbQuery); return; }
         if (data.startsWith('admin:toll:approve:'))      { await handleAdminTollApprove(bot, cbQuery); return; }
         if (data.startsWith('admin:toll:edit:'))         { await handleAdminTollEdit(bot, cbQuery); return; }
-        if (data.startsWith('admin:toll:cancel:'))       { await handleAdminTollCancel(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:block:'))         { await handleAdminTollBlock(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:unblock:'))       { await handleAdminTollUnblock(bot, cbQuery); return; }
+        if (data.startsWith('admin:toll:reblock:'))       { await handleAdminTollReblock(bot, cbQuery); return; }
+        if (data.startsWith('admin:users_page:'))        { await handleAdminUsersPage(bot, cbQuery); return; }
       }
 
       await routeCallback(bot, cbQuery);
