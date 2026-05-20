@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
   first_name      VARCHAR(255) NOT NULL DEFAULT 'User',
   last_name       VARCHAR(255),
   phone           VARCHAR(20),
+  saved_card      VARCHAR(20),
+  saved_full_name VARCHAR(255),
   lang            VARCHAR(5)   NOT NULL DEFAULT 'uz',
   balance         BIGINT       NOT NULL DEFAULT 0,
   paid_amount     BIGINT       NOT NULL DEFAULT 0,

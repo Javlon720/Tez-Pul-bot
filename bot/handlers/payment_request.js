@@ -71,14 +71,21 @@ export async function handlePaymentRequest(bot, msg, user) {
     [user.telegram_id]
   );
 
-  const session    = getSession(msg.from.id) || {};
-  const existingId = session.form_msg_id || session.last_message_id;
+  const { rows } = await query(
+    'SELECT saved_card, saved_full_name FROM users WHERE telegram_id = $1',
+    [user.telegram_id]
+  );
+  const saved = rows[0] || {};
+  const preData = {
+    card: saved.saved_card   || null,
+    name: saved.saved_full_name || null,
+  };
 
-  const newMsgId = await renderForm(bot, msg.chat.id, existingId, {});
+  const newMsgId = await renderForm(bot, msg.chat.id, null, preData);
   saveSession(msg.from.id, {
     current_state: 'PAY_REQ_FORM',
     form_msg_id:   newMsgId,
-    state_data:    {},
+    state_data:    preData,
   });
 }
 
@@ -155,10 +162,16 @@ export async function handlePayReqConfirm(bot, cbQuery, user) {
   }
   await bot.answerCallbackQuery(cbQuery.id);
 
-  await query(
-    `INSERT INTO payment_requests (user_id, card_number, full_name, amount) VALUES ($1, $2, $3, $4)`,
-    [user.telegram_id, card, name, amount]
-  );
+  await Promise.all([
+    query(
+      `INSERT INTO payment_requests (user_id, card_number, full_name, amount) VALUES ($1, $2, $3, $4)`,
+      [user.telegram_id, card, name, amount]
+    ),
+    query(
+      'UPDATE users SET saved_card = $1, saved_full_name = $2 WHERE telegram_id = $3',
+      [card, name, user.telegram_id]
+    ),
+  ]);
 
   await bot.editMessageText(
     `✅ <b>Murojaatingiz qabul qilindi!</b>\n\n` +
