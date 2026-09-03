@@ -1,12 +1,14 @@
 'use strict';
 
-import { query } from '../shared/db.js';
-import { getSession, saveSession, clearSession } from '../shared/session.js';
-import { invalidateUser } from '../services/userService.js';
-import getText from '../locales/index.js';
-import { formatNumber } from '../shared/utils.js';
+import { getSession, saveSession, clearSession } from './shared/session.js';
+import { invalidateUser } from './services/userService.js';
+import getText from './locales/index.js';
+import { formatNumber } from './shared/utils.js';
+import type { Bot, Message, Session, UserRow } from './types.js';
 
-async function showMainMenu(bot, chatId, user) {
+type MenuUser = Pick<UserRow, 'lang' | 'balance'>;
+
+async function showMainMenu(bot: Bot, chatId: number, user: MenuUser): Promise<Message> {
   const lang = user.lang || 'uz';
   return bot.sendMessage(
     chatId,
@@ -25,11 +27,13 @@ async function showMainMenu(bot, chatId, user) {
   );
 }
 
-async function deletePreviousMessage(bot, chatId, session) {
+async function deletePreviousMessage(bot: Bot, chatId: number, session: Session | null | undefined): Promise<void> {
   if (session?.last_message_id) {
     try {
       await bot.deleteMessage(chatId, session.last_message_id);
-    } catch (_) {}
+    } catch {
+      // xabar allaqachon o'chirilgan bo'lishi mumkin
+    }
   }
 }
 

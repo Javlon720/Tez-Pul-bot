@@ -3,16 +3,34 @@ import { query } from '../../shared/db.js';
 import { fmt } from '../../shared/utils.js';
 import { getSession, saveSession, clearSession } from '../../shared/session.js';
 import { invalidateUser } from '../../services/userService.js';
+import type {
+  Bot, CallbackQueryWithMessage, InlineKeyboardButton, MessageWithFrom,
+  Numeric, PaymentRequestRow, UserRow,
+} from '../../types.js';
 
-function maskPhone(phone) {
+/** Kutayotgan murojaatlar ro'yxati uchun satr */
+type PendingRow = Pick<PaymentRequestRow, 'id' | 'amount'> & Pick<UserRow, 'first_name' | 'username'>;
+
+/** Bitta murojaat + foydalanuvchi ma'lumotlari */
+type RequestDetailRow = PaymentRequestRow &
+  Pick<UserRow, 'first_name' | 'last_name' | 'username' | 'phone' | 'balance' | 'unpaid_amount' | 'paid_amount' | 'total_referrals'>;
+
+function maskPhone(phone: string | null | undefined): string {
   if (!phone) return '—';
   const p = String(phone).replace(/\s/g, '');
   return `+998 xxx xx ${p.slice(-2)}`;
 }
 
+function pendingKeyboard(rows: PendingRow[]): InlineKeyboardButton[][] {
+  return rows.map(r => [{
+    text: `${r.first_name}${r.username ? ` (@${r.username})` : ''} — ${fmt(r.amount)} so'm`,
+    callback_data: `admin:toll:req:${r.id}`,
+  }]);
+}
+
 // ── To'lovlar ro'yxati (pending payment requests) ─────────────────────────────
-export async function handleAdminTolls(bot, msg) {
-  const { rows } = await query(
+export async function handleAdminTolls(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const { rows } = await query<PendingRow>(
     `SELECT pr.id, pr.amount, u.first_name, u.username
      FROM payment_requests pr
      JOIN users u ON u.telegram_id = pr.user_id
@@ -28,23 +46,18 @@ export async function handleAdminTolls(bot, msg) {
     return;
   }
 
-  const inline_keyboard = rows.map(r => [{
-    text: `${r.first_name}${r.username ? ` (@${r.username})` : ''} — ${fmt(r.amount)} so'm`,
-    callback_data: `admin:toll:req:${r.id}`,
-  }]);
-
   await bot.sendMessage(msg.chat.id,
     `💳 <b>Kutayotgan to'lovlar</b> — ${rows.length} ta`,
-    { parse_mode: 'HTML', reply_markup: { inline_keyboard } }
+    { parse_mode: 'HTML', reply_markup: { inline_keyboard: pendingKeyboard(rows) } }
   );
 }
 
 // ── Bitta murojaat tafsiloti ──────────────────────────────────────────────────
-export async function handleAdminTollReq(bot, cbQuery) {
-  const reqId = parseInt(cbQuery.data.split(':')[3]);
+export async function handleAdminTollReq(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const reqId = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
   await bot.answerCallbackQuery(cbQuery.id);
 
-  const { rows } = await query(
+  const { rows } = await query<RequestDetailRow>(
     `SELECT pr.*, u.first_name, u.last_name, u.username, u.phone,
             u.balance, u.unpaid_amount, u.paid_amount, u.total_referrals
      FROM payment_requests pr
@@ -52,10 +65,10 @@ export async function handleAdminTollReq(bot, cbQuery) {
      WHERE pr.id = $1`,
     [reqId]
   );
-  if (!rows.length) return;
   const r = rows[0];
+  if (!r) return;
 
-  const { rows: refs } = await query(
+  const { rows: refs } = await query<Pick<UserRow, 'first_name' | 'username'>>(
     `SELECT u.first_name, u.username
      FROM referrals rf JOIN users u ON u.telegram_id = rf.referred_id
      WHERE rf.referrer_id = $1 ORDER BY rf.created_at DESC`,
@@ -97,8 +110,8 @@ export async function handleAdminTollReq(bot, cbQuery) {
 }
 
 // ── To'lash — screenshot so'rash ─────────────────────────────────────────────
-export async function handleAdminTollPay(bot, cbQuery) {
-  const reqId = parseInt(cbQuery.data.split(':')[3]);
+export async function handleAdminTollPay(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const reqId = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
   await bot.answerCallbackQuery(cbQuery.id);
 
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
@@ -119,9 +132,9 @@ export async function handleAdminTollPay(bot, cbQuery) {
 }
 
 // ── Screenshot qabul ─────────────────────────────────────────────────────────
-export async function handleAdminTollScreenshot(bot, msg) {
-  const session = getSession(msg.from.id) || {};
-  const { req_id: reqId } = session.state_data || {};
+export async function handleAdminTollScreenshot(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session = getSession(msg.from.id) ?? {};
+  const reqId   = session.state_data?.req_id;
   if (!reqId) return;
 
   const photo = msg.photo;
@@ -130,18 +143,22 @@ export async function handleAdminTollScreenshot(bot, msg) {
     await bot.sendMessage(msg.chat.id, '❌ Faqat rasm yoki fayl yuboring.');
     return;
   }
-  const fileId = photo ? photo[photo.length - 1].file_id : doc.file_id;
+  const fileId = photo ? photo[photo.length - 1]?.file_id : doc?.file_id;
+  if (!fileId) {
+    await bot.sendMessage(msg.chat.id, '❌ Faqat rasm yoki fayl yuboring.');
+    return;
+  }
 
-  const { rows } = await query(
+  const { rows } = await query<PaymentRequestRow & Pick<UserRow, 'first_name' | 'username'>>(
     `SELECT pr.*, u.first_name, u.username
      FROM payment_requests pr JOIN users u ON u.telegram_id = pr.user_id
      WHERE pr.id = $1`, [reqId]
   );
-  if (!rows.length) return;
   const r = rows[0];
+  if (!r) return;
   const name = r.first_name + (r.username ? ` (@${r.username})` : '');
 
-  const sentMsg = await bot.sendPhoto(msg.chat.id, fileId, {
+  await bot.sendPhoto(msg.chat.id, fileId, {
     caption:
       `📸 <b>To'lov screenshoti</b>\n\n` +
       `👤 ${name}\n💰 ${fmt(r.amount)} so'm\n\nTasdiqlaysizmi?`,
@@ -163,19 +180,19 @@ export async function handleAdminTollScreenshot(bot, msg) {
 }
 
 // ── Tasdiqlash ────────────────────────────────────────────────────────────────
-export async function handleAdminTollApprove(bot, cbQuery) {
-  const reqId   = parseInt(cbQuery.data.split(':')[3]);
-  const session = getSession(cbQuery.from.id) || {};
-  const { file_id: fileId } = session.state_data || {};
+export async function handleAdminTollApprove(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const reqId   = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
+  const session = getSession(cbQuery.from.id) ?? {};
+  const fileId  = session.state_data?.file_id;
   await bot.answerCallbackQuery(cbQuery.id);
 
-  const { rows } = await query(
+  const { rows } = await query<PaymentRequestRow & Pick<UserRow, 'first_name' | 'username' | 'phone' | 'lang'>>(
     `SELECT pr.*, u.first_name, u.username, u.phone, u.lang
      FROM payment_requests pr JOIN users u ON u.telegram_id = pr.user_id
      WHERE pr.id = $1`, [reqId]
   );
-  if (!rows.length) return;
   const r = rows[0];
+  if (!r) return;
 
   await query(`UPDATE payment_requests SET status = 'approved' WHERE id = $1`, [reqId]);
   await query(
@@ -190,7 +207,7 @@ export async function handleAdminTollApprove(bot, cbQuery) {
 
   // Kanalga yuborish
   const channelId = process.env.PAYMENT_CHANNEL_ID;
-  let channelMsgId = null;
+  let channelMsgId: number | null = null;
   if (channelId && fileId) {
     const cap =
       `💳 <b>To'lov amalga oshirildi</b>\n\n` +
@@ -200,7 +217,9 @@ export async function handleAdminTollApprove(bot, cbQuery) {
     try {
       const m = await bot.sendPhoto(channelId, fileId, { caption: cap, parse_mode: 'HTML' });
       channelMsgId = m.message_id;
-    } catch (_) {}
+    } catch {
+      // kanal sozlanmagan yoki bot u yerda admin emas
+    }
   }
 
   // Userga xabar
@@ -228,9 +247,9 @@ export async function handleAdminTollApprove(bot, cbQuery) {
 }
 
 // ── Tahrirlash ────────────────────────────────────────────────────────────────
-export async function handleAdminTollEdit(bot, cbQuery) {
-  const reqId   = parseInt(cbQuery.data.split(':')[3]);
-  const session = getSession(cbQuery.from.id) || {};
+export async function handleAdminTollEdit(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const reqId   = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
+  const session = getSession(cbQuery.from.id) ?? {};
   await bot.answerCallbackQuery(cbQuery.id);
 
   await bot.editMessageCaption('🗑 Screenshot o\'chirildi', {
@@ -247,17 +266,18 @@ export async function handleAdminTollEdit(bot, cbQuery) {
 }
 
 // ── Block ─────────────────────────────────────────────────────────────────────
-export async function handleAdminTollBlock(bot, cbQuery) {
-  const reqId = parseInt(cbQuery.data.split(':')[3]);
+export async function handleAdminTollBlock(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const reqId = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
   await bot.answerCallbackQuery(cbQuery.id, { text: '🚫 Foydalanuvchi bloklandi' });
 
-  const { rows } = await query(
+  const { rows } = await query<{ user_id: Numeric } & Pick<UserRow, 'first_name' | 'username'>>(
     `SELECT pr.user_id, u.first_name, u.username
      FROM payment_requests pr JOIN users u ON u.telegram_id = pr.user_id
      WHERE pr.id = $1`, [reqId]
   );
-  if (!rows.length) return;
-  const { user_id: userId, first_name, username } = rows[0];
+  const row = rows[0];
+  if (!row) return;
+  const { user_id: userId, first_name, username } = row;
 
   await query(`UPDATE users SET is_blocked = true WHERE telegram_id = $1`, [userId]);
   await query(`UPDATE payment_requests SET status = 'rejected' WHERE id = $1`, [reqId]);
@@ -281,16 +301,18 @@ export async function handleAdminTollBlock(bot, cbQuery) {
 }
 
 // ── Unblock ───────────────────────────────────────────────────────────────────
-export async function handleAdminTollUnblock(bot, cbQuery) {
-  const userId = parseInt(cbQuery.data.split(':')[3]);
+export async function handleAdminTollUnblock(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const userId = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
   await bot.answerCallbackQuery(cbQuery.id, { text: '✅ Blockdan ochildi' });
 
   await query(`UPDATE users SET is_blocked = false WHERE telegram_id = $1`, [userId]);
   invalidateUser(userId);
 
-  const { rows } = await query('SELECT first_name, username FROM users WHERE telegram_id = $1', [userId]);
-  const u    = rows[0] || {};
-  const name = (u.first_name || 'User') + (u.username ? ` (@${u.username})` : '');
+  const { rows } = await query<Pick<UserRow, 'first_name' | 'username'>>(
+    'SELECT first_name, username FROM users WHERE telegram_id = $1', [userId]
+  );
+  const u    = rows[0];
+  const name = (u?.first_name || 'User') + (u?.username ? ` (@${u.username})` : '');
 
   await bot.editMessageText(
     `✅ <b>${name}</b> blockdan ochildi.`,
@@ -309,16 +331,18 @@ export async function handleAdminTollUnblock(bot, cbQuery) {
 }
 
 // ── Qayta block (unblock dan keyin) ───────────────────────────────────────────
-export async function handleAdminTollReblock(bot, cbQuery) {
-  const userId = parseInt(cbQuery.data.split(':')[3]);
+export async function handleAdminTollReblock(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const userId = parseInt((cbQuery.data ?? '').split(':')[3] ?? '', 10);
   await bot.answerCallbackQuery(cbQuery.id, { text: '🚫 Qayta bloklandi' });
 
   await query(`UPDATE users SET is_blocked = true WHERE telegram_id = $1`, [userId]);
   invalidateUser(userId);
 
-  const { rows } = await query('SELECT first_name, username FROM users WHERE telegram_id = $1', [userId]);
-  const u    = rows[0] || {};
-  const name = (u.first_name || 'User') + (u.username ? ` (@${u.username})` : '');
+  const { rows } = await query<Pick<UserRow, 'first_name' | 'username'>>(
+    'SELECT first_name, username FROM users WHERE telegram_id = $1', [userId]
+  );
+  const u    = rows[0];
+  const name = (u?.first_name || 'User') + (u?.username ? ` (@${u.username})` : '');
 
   await bot.editMessageText(
     `🚫 <b>${name}</b> qayta bloklandi.`,
@@ -337,11 +361,11 @@ export async function handleAdminTollReblock(bot, cbQuery) {
 }
 
 // ── Ortga (ro'yxatga) ─────────────────────────────────────────────────────────
-export async function handleAdminTollBack(bot, cbQuery) {
+export async function handleAdminTollBack(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
   clearSession(cbQuery.from.id);
 
-  const { rows } = await query(
+  const { rows } = await query<PendingRow>(
     `SELECT pr.id, pr.amount, u.first_name, u.username
      FROM payment_requests pr JOIN users u ON u.telegram_id = pr.user_id
      WHERE pr.status = 'pending' ORDER BY pr.created_at ASC`
@@ -355,13 +379,8 @@ export async function handleAdminTollBack(bot, cbQuery) {
     return;
   }
 
-  const inline_keyboard = rows.map(r => [{
-    text: `${r.first_name}${r.username ? ` (@${r.username})` : ''} — ${fmt(r.amount)} so'm`,
-    callback_data: `admin:toll:req:${r.id}`,
-  }]);
-
   await bot.editMessageText(
     `💳 <b>Kutayotgan to'lovlar</b> — ${rows.length} ta`,
-    { chat_id: cbQuery.message.chat.id, message_id: cbQuery.message.message_id, parse_mode: 'HTML', reply_markup: { inline_keyboard } }
+    { chat_id: cbQuery.message.chat.id, message_id: cbQuery.message.message_id, parse_mode: 'HTML', reply_markup: { inline_keyboard: pendingKeyboard(rows) } }
   ).catch(() => {});
 }

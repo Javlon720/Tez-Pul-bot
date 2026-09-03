@@ -1,14 +1,17 @@
 'use strict';
 import { query, transaction } from '../shared/db.js';
-import { fmt } from '../shared/utils.js';
+import { errMessage, fmt, toInt } from '../shared/utils.js';
 import getText from '../locales/index.js';
 import { getSession, saveSession, clearSession } from '../shared/session.js';
 import { invalidateUser } from '../services/userService.js';
 import { getSpinMinBet, getSpinMultiply } from '../services/settingsService.js';
 import { showMainMenu, deletePrevMsg } from '../helpers.js';
+import type {
+  Bot, CallbackQueryWithMessage, Game, GameKey, MessageWithFrom, Numeric, Session, UserRow,
+} from '../types.js';
 
 // Telegram dice o'yinlari va yutish qiymatlari
-const GAMES = {
+const GAMES: Record<GameKey, Game> = {
   slot:       { emoji: '🎰', wins: [1, 22, 43, 64], label: 'Slot',       waitMs: 3000 },
   football:   { emoji: '⚽', wins: [5],              label: 'Futbol',     waitMs: 2500 },
   basketball: { emoji: '🏀', wins: [4, 5],           label: 'Basketbol',  waitMs: 2500 },
@@ -16,28 +19,36 @@ const GAMES = {
   darts:      { emoji: '🎯', wins: [6],              label: 'Darts',      waitMs: 2500 },
 };
 
+function isGameKey(value: string | undefined): value is GameKey {
+  return value !== undefined && Object.prototype.hasOwnProperty.call(GAMES, value);
+}
+
+function gameOf(value: string | undefined): Game {
+  return isGameKey(value) ? GAMES[value] : GAMES.slot;
+}
+
 // Bir vaqtda bir o'yin — lock
-const locks = new Map();
-function acquireLock(id) {
+const locks = new Map<number, boolean>();
+function acquireLock(id: number): boolean {
   if (locks.has(id)) return false;
   locks.set(id, true);
   setTimeout(() => locks.delete(id), 15000);
   return true;
 }
-function releaseLock(id) { locks.delete(id); }
+function releaseLock(id: number): void { locks.delete(id); }
 
-async function getTop() {
-  const { rows } = await query(
+type TopRow = Pick<UserRow, 'first_name' | 'username' | 'total_referrals'>;
+
+async function getTop(): Promise<TopRow[]> {
+  const { rows } = await query<TopRow>(
     'SELECT first_name, username, total_referrals FROM users WHERE NOT is_blocked ORDER BY total_referrals DESC LIMIT 5'
   );
   return rows;
 }
 
 // 1. O'yin tanlash sahifasi
-export async function handleSpinEntry(bot, msg, user) {
-  const chatId  = msg.chat.id;
-  const lang    = user.lang || 'uz';
-  const session = getSession(user.telegram_id) || {};
+async function sendSpinMenu(bot: Bot, chatId: number, telegramId: number, user: UserRow): Promise<void> {
+  const session = getSession(telegramId) ?? {};
 
   await deletePrevMsg(bot, chatId, session);
 
@@ -78,15 +89,19 @@ ${topText}`;
       ],
     },
   });
-  saveSession(user.telegram_id, { current_state: 'WAITING_SPIN_GAME', last_message_id: sentMsg.message_id, state_data: {} });
+  saveSession(telegramId, { current_state: 'WAITING_SPIN_GAME', last_message_id: sentMsg.message_id, state_data: {} });
+}
+
+export async function handleSpinEntry(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
+  await sendSpinMenu(bot, msg.chat.id, msg.from.id, user);
 }
 
 // 2. O'yin tanlandi → bet miqdori so'ra
-export async function handleSpinGameSelect(bot, cbQuery, user) {
+export async function handleSpinGameSelect(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   const chatId  = cbQuery.message.chat.id;
-  const gameKey = cbQuery.data.split(':')[2];
-  const game    = GAMES[gameKey];
-  if (!game) { await bot.answerCallbackQuery(cbQuery.id); return; }
+  const gameKey = (cbQuery.data ?? '').split(':')[2];
+  if (!isGameKey(gameKey)) { await bot.answerCallbackQuery(cbQuery.id); return; }
+  const game = GAMES[gameKey];
 
   await bot.answerCallbackQuery(cbQuery.id);
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: cbQuery.message.message_id }).catch(() => {});
@@ -106,11 +121,16 @@ export async function handleSpinGameSelect(bot, cbQuery, user) {
 }
 
 // 3. Bet miqdori matn orqali kiritildi
-export async function handleSpinBetInput(bot, msg, user, session) {
+export async function handleSpinBetInput(
+  bot: Bot,
+  msg: MessageWithFrom,
+  user: UserRow,
+  session: Session | null
+): Promise<void> {
   const chatId  = msg.chat.id;
-  const gameKey = session?.state_data?.game || 'slot';
-  const game    = GAMES[gameKey] || GAMES.slot;
-  const amount  = parseInt(msg.text?.trim(), 10);
+  const gameKey = session?.state_data?.game ?? 'slot';
+  const game    = GAMES[gameKey];
+  const amount  = parseInt((msg.text ?? '').trim(), 10);
 
   bot.deleteMessage(chatId, msg.message_id).catch(() => {});
 
@@ -126,7 +146,7 @@ export async function handleSpinBetInput(bot, msg, user, session) {
     return;
   }
 
-  if (amount > parseInt(user.balance || 0)) {
+  if (amount > toInt(user.balance)) {
     const sentMsg = await bot.sendMessage(chatId,
       getText(user.lang || 'uz', 'spin_not_enough_money', { bet: fmt(amount) }),
       { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '🔙 Orqaga', callback_data: 'spin:back' }]] } }
@@ -157,14 +177,14 @@ export async function handleSpinBetInput(bot, msg, user, session) {
 }
 
 // 4. O'ynash tugmasi bosildi
-export async function handleSpinPlay(bot, cbQuery, user) {
+export async function handleSpinPlay(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   const chatId     = cbQuery.message.chat.id;
   const telegramId = cbQuery.from.id;
   const lang       = user.lang || 'uz';
-  const parts      = cbQuery.data.split(':');
-  const gameKey    = parts[2];
-  const amount     = parseInt(parts[3], 10);
-  const game       = GAMES[gameKey] || GAMES.slot;
+  const parts      = (cbQuery.data ?? '').split(':');
+  const gameKey    = parts[2] ?? '';
+  const amount     = parseInt(parts[3] ?? '', 10);
+  const game       = gameOf(gameKey);
 
   if (isNaN(amount)) { await bot.answerCallbackQuery(cbQuery.id); return; }
 
@@ -180,8 +200,8 @@ export async function handleSpinPlay(bot, cbQuery, user) {
     const multiply = await getSpinMultiply();
 
     // Yangi balansni tekshir
-    const { rows: fresh } = await query('SELECT balance FROM users WHERE telegram_id = $1', [telegramId]);
-    if (parseInt(fresh[0]?.balance || 0) < amount) {
+    const { rows: fresh } = await query<Pick<UserRow, 'balance'>>('SELECT balance FROM users WHERE telegram_id = $1', [telegramId]);
+    if (toInt(fresh[0]?.balance) < amount) {
       releaseLock(telegramId);
       await bot.sendMessage(chatId, getText(lang, 'spin_not_enough_money', { bet: fmt(amount) }), { parse_mode: 'HTML' });
       return;
@@ -192,7 +212,7 @@ export async function handleSpinPlay(bot, cbQuery, user) {
 
     // Dice animatsiyasi
     const diceMsg = await bot.sendDice(chatId, { emoji: game.emoji });
-    const diceVal = diceMsg.dice.value;
+    const diceVal = diceMsg.dice?.value ?? 0;
     await new Promise(r => setTimeout(r, game.waitMs));
 
     const isWin  = game.wins.includes(diceVal);
@@ -212,7 +232,7 @@ export async function handleSpinPlay(bot, cbQuery, user) {
 
     invalidateUser(telegramId);
 
-    const { rows: nb } = await query('SELECT balance FROM users WHERE telegram_id = $1', [telegramId]);
+    const { rows: nb } = await query<{ balance: Numeric }>('SELECT balance FROM users WHERE telegram_id = $1', [telegramId]);
     const newBal = fmt(nb[0]?.balance || 0);
 
     const resultText = isWin
@@ -238,22 +258,23 @@ export async function handleSpinPlay(bot, cbQuery, user) {
       },
     });
   } catch (err) {
-    console.error('[Spin] Xato:', err.message);
+    console.error('[Spin] Xato:', errMessage(err));
   } finally {
     releaseLock(telegramId);
   }
 }
 
 // 5. Yana o'ynash
-export async function handleSpinAgain(bot, cbQuery, user) {
+export async function handleSpinAgain(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   const chatId  = cbQuery.message.chat.id;
-  const gameKey = cbQuery.data.split(':')[2] || 'slot';
-  const game    = GAMES[gameKey] || GAMES.slot;
+  const rawKey  = (cbQuery.data ?? '').split(':')[2];
+  const gameKey: GameKey = isGameKey(rawKey) ? rawKey : 'slot';
+  const game    = GAMES[gameKey];
 
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: cbQuery.message.message_id }).catch(() => {});
   await bot.answerCallbackQuery(cbQuery.id);
 
-  const [minBet, multiply] = await Promise.all([getSpinMinBet(), getSpinMultiply()]);
+  const minBet = await getSpinMinBet();
 
   const sentMsg = await bot.sendMessage(chatId,
     `${game.emoji} <b>${game.label}</b> o'yini\n\n` +
@@ -267,15 +288,15 @@ export async function handleSpinAgain(bot, cbQuery, user) {
 }
 
 // 6. Boshqa o'yin tanlash
-export async function handleSpinChoose(bot, cbQuery, user) {
+export async function handleSpinChoose(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   const chatId = cbQuery.message.chat.id;
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: cbQuery.message.message_id }).catch(() => {});
   await bot.answerCallbackQuery(cbQuery.id);
-  await handleSpinEntry(bot, { chat: { id: chatId } }, user);
+  await sendSpinMenu(bot, chatId, cbQuery.from.id, user);
 }
 
 // 7. Bosh menyuga qaytish
-export async function handleSpinBack(bot, cbQuery, user) {
+export async function handleSpinBack(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   const chatId = cbQuery.message.chat.id;
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: cbQuery.message.message_id }).catch(() => {});
   await bot.answerCallbackQuery(cbQuery.id);

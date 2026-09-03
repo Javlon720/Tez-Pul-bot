@@ -3,18 +3,28 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20.0.0" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "start": "node bot/index.js",
-    "dev":   "nodemon bot/index.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/bot/index.js",
+    "dev": "tsx watch bot/index.ts",
     "db:init": "psql -h $DB_HOST -U $DB_USER -d $DB_NAME -f bot/db/schema.sql"
   },
   "dependencies": {
-    "dotenv":                "^16.3.1",
+    "dotenv": "^16.3.1",
     "node-telegram-bot-api": "^0.66.0",
-    "pg":                    "^8.11.3"
+    "pg": "^8.11.3",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "@types/node": "^22.10.2",
+    "@types/node-telegram-bot-api": "^0.64.8",
+    "@types/pg": "^8.11.10",
+    "nodemon": "^3.1.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
   }
 }

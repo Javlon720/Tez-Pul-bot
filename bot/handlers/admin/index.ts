@@ -12,29 +12,35 @@ export {
   handleAdminTollBack,
 } from './tolls.js';
 
-import { query, transaction } from '../../shared/db.js';
+import { query } from '../../shared/db.js';
 import getText from '../../locales/index.js';
-import { fmt } from '../../shared/utils.js';
+import type { TextKey } from '../../locales/index.js';
+import { fmt, toInt } from '../../shared/utils.js';
 import { getSession, saveSession, clearSession } from '../../shared/session.js';
 import { invalidateUser } from '../../services/userService.js';
 import { invalidateAllSubCache } from '../../middleware/subscription.js';
-import { getSetting, setSetting, getMinPayout } from '../../services/settingsService.js';
+import { getSetting, setSetting, isSettingKey } from '../../services/settingsService.js';
+import type {
+  Bot, CallbackQueryWithMessage, CountRow, InlineKeyboardButton, InlineKeyboardMarkup,
+  Message, MessageWithFrom, Numeric, SettingKey, SubscriptionChannelRow, SumRow, UserRow,
+} from '../../types.js';
 
 // ─── Yordamchi: foydalanuvchini qidirish ──────────────────────────────────
-async function findUser(input) {
+async function findUser(input: string | undefined): Promise<UserRow | null> {
+  if (!input) return null;
   if (/^\d+$/.test(input)) {
-    const { rows } = await query('SELECT * FROM users WHERE telegram_id = $1', [parseInt(input)]);
-    return rows[0] || null;
+    const { rows } = await query<UserRow>('SELECT * FROM users WHERE telegram_id = $1', [parseInt(input, 10)]);
+    return rows[0] ?? null;
   }
   if (input.startsWith('@')) {
-    const { rows } = await query('SELECT * FROM users WHERE username = $1', [input.slice(1)]);
-    return rows[0] || null;
+    const { rows } = await query<UserRow>('SELECT * FROM users WHERE username = $1', [input.slice(1)]);
+    return rows[0] ?? null;
   }
   return null;
 }
 
 // ─── Admin menyu ──────────────────────────────────────────────────────────
-export async function handleAdminMenu(bot, msg) {
+export async function handleAdminMenu(bot: Bot, msg: MessageWithFrom): Promise<void> {
   clearSession(msg.from.id);
   await bot.sendMessage(msg.chat.id, getText('uz', 'admin_menu'), {
     parse_mode: 'HTML',
@@ -51,55 +57,79 @@ export async function handleAdminMenu(bot, msg) {
 }
 
 // ─── Statistika ───────────────────────────────────────────────────────────
-export async function handleAdminStats(bot, msg) {
+export async function handleAdminStats(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const [total, active, today, bal, paid] = await Promise.all([
-    query('SELECT COUNT(*) AS c FROM users'),
-    query('SELECT COUNT(*) AS c FROM users WHERE last_active > NOW() - INTERVAL \'24 hours\''),
-    query('SELECT COUNT(*) AS c FROM users WHERE created_at > NOW() - INTERVAL \'24 hours\''),
-    query('SELECT COALESCE(SUM(balance), 0) AS s FROM users'),
-    query('SELECT COALESCE(SUM(paid_amount), 0) AS s FROM users'),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users'),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users WHERE last_active > NOW() - INTERVAL \'24 hours\''),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users WHERE created_at > NOW() - INTERVAL \'24 hours\''),
+    query<SumRow>('SELECT COALESCE(SUM(balance), 0) AS s FROM users'),
+    query<SumRow>('SELECT COALESCE(SUM(paid_amount), 0) AS s FROM users'),
   ]);
   await bot.sendMessage(msg.chat.id,
     `📊 <b>Umumiy Statistika</b>\n\n` +
-    `👥 Jami: <b>${total.rows[0].c}</b>\n` +
-    `🟢 Faol (24s): <b>${active.rows[0].c}</b>\n` +
-    `📅 Bugun yangi: <b>${today.rows[0].c}</b>\n\n` +
-    `💰 Jami balanslar: <b>${fmt(bal.rows[0].s)} so'm</b>\n` +
-    `✅ To'langan: <b>${fmt(paid.rows[0].s)} so'm</b>`,
+    `👥 Jami: <b>${total.rows[0]?.c ?? 0}</b>\n` +
+    `🟢 Faol (24s): <b>${active.rows[0]?.c ?? 0}</b>\n` +
+    `📅 Bugun yangi: <b>${today.rows[0]?.c ?? 0}</b>\n\n` +
+    `💰 Jami balanslar: <b>${fmt(bal.rows[0]?.s)} so'm</b>\n` +
+    `✅ To'langan: <b>${fmt(paid.rows[0]?.s)} so'm</b>`,
     { parse_mode: 'HTML' }
   );
 }
 
 const PAGE_SIZE = 15;
 
-async function buildUsersPage(page = 0) {
+interface UsersPageStats {
+  total: Numeric;
+  active: Numeric;
+  inactive: Numeric;
+}
+
+type UsersPageRow = Pick<UserRow, 'telegram_id' | 'first_name' | 'username' | 'is_blocked'>;
+
+interface UsersPage {
+  stats: UsersPageStats;
+  users: UsersPageRow[];
+  totalCount: number;
+  page: number;
+}
+
+async function buildUsersPage(page = 0): Promise<UsersPage> {
   const offset = page * PAGE_SIZE;
   const [stats, users, total] = await Promise.all([
-    query(`SELECT
+    query<UsersPageStats>(`SELECT
       COUNT(*) AS total,
       COUNT(*) FILTER (WHERE last_active > NOW() - INTERVAL '24 hours') AS active,
       COUNT(*) FILTER (WHERE last_active <= NOW() - INTERVAL '24 hours') AS inactive
       FROM users`),
-    query(
+    query<UsersPageRow>(
       `SELECT telegram_id, first_name, username, is_blocked
        FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
       [PAGE_SIZE, offset]
     ),
-    query('SELECT COUNT(*) AS c FROM users'),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users'),
   ]);
-  return { stats: stats.rows[0], users: users.rows, totalCount: parseInt(total.rows[0].c), page };
+  return {
+    stats: stats.rows[0] ?? { total: 0, active: 0, inactive: 0 },
+    users: users.rows,
+    totalCount: toInt(total.rows[0]?.c),
+    page,
+  };
 }
 
-// ─── Foydalanuvchilar ro'yxati ────────────────────────────────────────────────
-export async function handleAdminUsers(bot, msg) {
-  const { stats, users, totalCount } = await buildUsersPage(0);
-
-  const inline_keyboard = users.map(u => [{
+function usersKeyboard(users: UsersPageRow[]): InlineKeyboardButton[][] {
+  return users.map(u => [{
     text: `${u.is_blocked ? '🚫' : '👤'} ${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
     callback_data: `admin:user:${u.telegram_id}`,
   }]);
+}
 
-  const nav = [];
+// ─── Foydalanuvchilar ro'yxati ────────────────────────────────────────────────
+export async function handleAdminUsers(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const { stats, users, totalCount } = await buildUsersPage(0);
+
+  const inline_keyboard = usersKeyboard(users);
+
+  const nav: InlineKeyboardButton[] = [];
   if (totalCount > PAGE_SIZE) nav.push({ text: `➡️ Keyingi`, callback_data: `admin:users_page:1` });
   if (nav.length) inline_keyboard.push(nav);
 
@@ -113,26 +143,23 @@ export async function handleAdminUsers(bot, msg) {
 }
 
 // ─── Foydalanuvchilar sahifa (inline) ────────────────────────────────────────
-export async function handleAdminUsersList(bot, cbQuery) {
+export async function handleAdminUsersList(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
   await renderUsersPage(bot, cbQuery.message.chat.id, cbQuery.message.message_id, 0);
 }
 
-export async function handleAdminUsersPage(bot, cbQuery) {
-  const page = parseInt(cbQuery.data.split(':')[2]) || 0;
+export async function handleAdminUsersPage(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const page = toInt((cbQuery.data ?? '').split(':')[2]);
   await bot.answerCallbackQuery(cbQuery.id);
   await renderUsersPage(bot, cbQuery.message.chat.id, cbQuery.message.message_id, page);
 }
 
-async function renderUsersPage(bot, chatId, msgId, page) {
+async function renderUsersPage(bot: Bot, chatId: number, msgId: number, page: number): Promise<void> {
   const { stats, users, totalCount } = await buildUsersPage(page);
 
-  const inline_keyboard = users.map(u => [{
-    text: `${u.is_blocked ? '🚫' : '👤'} ${u.first_name}${u.username ? ` (@${u.username})` : ''}`,
-    callback_data: `admin:user:${u.telegram_id}`,
-  }]);
+  const inline_keyboard = usersKeyboard(users);
 
-  const nav = [];
+  const nav: InlineKeyboardButton[] = [];
   if (page > 0) nav.push({ text: '⬅️ Oldingi', callback_data: `admin:users_page:${page - 1}` });
   if ((page + 1) * PAGE_SIZE < totalCount) nav.push({ text: '➡️ Keyingi', callback_data: `admin:users_page:${page + 1}` });
   if (nav.length) inline_keyboard.push(nav);
@@ -148,15 +175,15 @@ async function renderUsersPage(bot, chatId, msgId, page) {
 }
 
 // ─── Foydalanuvchi to'liq ma'lumoti ──────────────────────────────────────
-export async function handleAdminUserDetail(bot, cbQuery) {
-  const telegramId = parseInt(cbQuery.data.split(':')[2]);
+export async function handleAdminUserDetail(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const telegramId = toInt((cbQuery.data ?? '').split(':')[2]);
   await bot.answerCallbackQuery(cbQuery.id);
 
-  const { rows } = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-  if (!rows.length) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Foydalanuvchi topilmadi', show_alert: true }); return; }
+  const { rows } = await query<UserRow>('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
   const u = rows[0];
+  if (!u) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Foydalanuvchi topilmadi', show_alert: true }); return; }
 
-  const { rows: refs } = await query(
+  const { rows: refs } = await query<Pick<UserRow, 'telegram_id' | 'first_name' | 'username'>>(
     `SELECT u.telegram_id, u.first_name, u.username
      FROM referrals r
      JOIN users u ON u.telegram_id = r.referred_id
@@ -181,7 +208,7 @@ export async function handleAdminUserDetail(bot, cbQuery) {
     `🕐 <b>So'nggi faollik:</b> ${new Date(u.last_active).toLocaleDateString('ru-RU')}\n\n` +
     `👥 <b>Qo'shgan odamlar:</b> ${u.total_referrals}\n${refList}`;
 
-  const blockBtn = u.is_blocked
+  const blockBtn: InlineKeyboardButton = u.is_blocked
     ? { text: '✅ Blockdan olish', callback_data: `admin:block:${telegramId}` }
     : { text: '🚫 Block qilish',   callback_data: `admin:block:${telegramId}` };
 
@@ -199,13 +226,14 @@ export async function handleAdminUserDetail(bot, cbQuery) {
 }
 
 // ─── Foydalanuvchini block / unblock ─────────────────────────────────────
-export async function handleAdminUserBlock(bot, cbQuery) {
-  const telegramId = parseInt(cbQuery.data.split(':')[2]);
+export async function handleAdminUserBlock(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const telegramId = toInt((cbQuery.data ?? '').split(':')[2]);
 
-  const { rows } = await query('SELECT is_blocked FROM users WHERE telegram_id = $1', [telegramId]);
-  if (!rows.length) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Topilmadi' }); return; }
+  const { rows } = await query<Pick<UserRow, 'is_blocked'>>('SELECT is_blocked FROM users WHERE telegram_id = $1', [telegramId]);
+  const row = rows[0];
+  if (!row) { await bot.answerCallbackQuery(cbQuery.id, { text: '❌ Topilmadi' }); return; }
 
-  const newBlocked = !rows[0].is_blocked;
+  const newBlocked = !row.is_blocked;
   await query('UPDATE users SET is_blocked = $1 WHERE telegram_id = $2', [newBlocked, telegramId]);
   invalidateUser(telegramId);
 
@@ -221,7 +249,7 @@ export async function handleAdminUserBlock(bot, cbQuery) {
 }
 
 // ─── Bonus: step 1 ────────────────────────────────────────────────────────
-export async function handleAdminBonusStart(bot, msg) {
+export async function handleAdminBonusStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const sentMsg = await bot.sendMessage(msg.chat.id,
     '💰 <b>Bonus Yuborish</b>\n\nFoydalanuvchi ID yoki @username kiriting:',
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] } }
@@ -229,7 +257,7 @@ export async function handleAdminBonusStart(bot, msg) {
   saveSession(msg.from.id, { current_state: 'ADMIN_BONUS_TARGET', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminBonusTargetInput(bot, msg) {
+export async function handleAdminBonusTargetInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const target = await findUser(msg.text?.trim());
   if (!target) { await bot.sendMessage(msg.chat.id, getText('uz', 'bonus_not_found')); return; }
 
@@ -238,23 +266,23 @@ export async function handleAdminBonusTargetInput(bot, msg) {
     getText('uz', 'bonus_amount', { user: name }),
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] } }
   );
-  const session = getSession(msg.from.id) || {};
+  const session = getSession(msg.from.id) ?? {};
   saveSession(msg.from.id, { ...session, current_state: 'ADMIN_BONUS_AMOUNT', last_message_id: sentMsg.message_id, state_data: { target_id: target.telegram_id, target_name: target.first_name } });
 }
 
-export async function handleAdminBonusAmountInput(bot, msg) {
-  const session  = getSession(msg.from.id) || {};
-  const amount   = parseInt(msg.text?.trim(), 10);
+export async function handleAdminBonusAmountInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session  = getSession(msg.from.id) ?? {};
+  const amount   = parseInt((msg.text ?? '').trim(), 10);
   if (isNaN(amount) || amount <= 0) { await bot.sendMessage(msg.chat.id, getText('uz', 'bonus_invalid')); return; }
 
-  const { target_id: targetId, target_name: targetName } = session.state_data || {};
+  const { target_id: targetId, target_name: targetName } = session.state_data ?? {};
   if (!targetId) { await bot.sendMessage(msg.chat.id, '❌ Xato. Qaytadan boshlang.'); clearSession(msg.from.id); return; }
 
   await query('UPDATE users SET balance = balance + $1, unpaid_amount = unpaid_amount + $1 WHERE telegram_id = $2', [amount, targetId]);
   await query(`INSERT INTO payments (user_id, amount, status, note) VALUES ($1, $2, 'completed', 'admin_bonus')`, [targetId, amount]);
   invalidateUser(targetId);
 
-  const { rows } = await query('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
+  const { rows } = await query<Pick<UserRow, 'balance' | 'lang'>>('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
   const upd = rows[0];
 
   await bot.sendMessage(msg.chat.id, getText('uz', 'bonus_success', { user: targetName, amount: fmt(amount), balance: fmt(upd?.balance || 0) }), { parse_mode: 'HTML' });
@@ -263,7 +291,7 @@ export async function handleAdminBonusAmountInput(bot, msg) {
 }
 
 // ─── Jarima ───────────────────────────────────────────────────────────────
-export async function handleAdminPenaltyStart(bot, msg) {
+export async function handleAdminPenaltyStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const sentMsg = await bot.sendMessage(msg.chat.id,
     '⚠️ <b>Jarima Berish</b>\n\nFoydalanuvchi ID yoki @username kiriting:',
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] } }
@@ -271,7 +299,7 @@ export async function handleAdminPenaltyStart(bot, msg) {
   saveSession(msg.from.id, { current_state: 'ADMIN_PENALTY_TARGET', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminPenaltyTargetInput(bot, msg) {
+export async function handleAdminPenaltyTargetInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const target = await findUser(msg.text?.trim());
   if (!target) { await bot.sendMessage(msg.chat.id, getText('uz', 'bonus_not_found')); return; }
 
@@ -280,21 +308,21 @@ export async function handleAdminPenaltyTargetInput(bot, msg) {
     `⚠️ <b>${name}</b> dan necha so'm jarima olinadi?\n\nHozirgi balans: <b>${fmt(target.balance)} so'm</b>`,
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] } }
   );
-  const session = getSession(msg.from.id) || {};
+  const session = getSession(msg.from.id) ?? {};
   saveSession(msg.from.id, { ...session, current_state: 'ADMIN_PENALTY_AMOUNT', last_message_id: sentMsg.message_id, state_data: { target_id: target.telegram_id, target_name: target.first_name } });
 }
 
-export async function handleAdminPenaltyAmountInput(bot, msg) {
-  const session = getSession(msg.from.id) || {};
-  const amount  = parseInt(msg.text?.trim(), 10);
+export async function handleAdminPenaltyAmountInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session = getSession(msg.from.id) ?? {};
+  const amount  = parseInt((msg.text ?? '').trim(), 10);
   if (isNaN(amount) || amount <= 0) { await bot.sendMessage(msg.chat.id, getText('uz', 'bonus_invalid')); return; }
 
-  const { target_id: targetId, target_name: targetName } = session.state_data || {};
+  const { target_id: targetId, target_name: targetName } = session.state_data ?? {};
   if (!targetId) { await bot.sendMessage(msg.chat.id, '❌ Xato. Qaytadan boshlang.'); clearSession(msg.from.id); return; }
 
-  const { rows } = await query('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
+  const { rows } = await query<Pick<UserRow, 'balance' | 'lang'>>('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
   const user = rows[0];
-  if (!user || parseInt(user.balance) < amount) {
+  if (!user || toInt(user.balance) < amount) {
     await bot.sendMessage(msg.chat.id, getText('uz', 'penalty_not_enough', { balance: fmt(user?.balance || 0) }), { parse_mode: 'HTML' });
     return;
   }
@@ -302,14 +330,14 @@ export async function handleAdminPenaltyAmountInput(bot, msg) {
   await query('UPDATE users SET balance = balance - $1 WHERE telegram_id = $2', [amount, targetId]);
   invalidateUser(targetId);
 
-  const { rows: upd } = await query('SELECT balance FROM users WHERE telegram_id = $1', [targetId]);
+  const { rows: upd } = await query<Pick<UserRow, 'balance'>>('SELECT balance FROM users WHERE telegram_id = $1', [targetId]);
   await bot.sendMessage(msg.chat.id, getText('uz', 'penalty_success', { user: targetName, amount: fmt(amount), balance: fmt(upd[0]?.balance || 0) }), { parse_mode: 'HTML' });
   bot.sendMessage(targetId, getText(user.lang || 'uz', 'user_penalty_notify', { amount: fmt(amount), balance: fmt(upd[0]?.balance || 0) })).catch(() => {});
   clearSession(msg.from.id);
 }
 
 // ─── Broadcast ────────────────────────────────────────────────────────────
-export async function handleAdminBroadcastStart(bot, msg) {
+export async function handleAdminBroadcastStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const sentMsg = await bot.sendMessage(msg.chat.id, getText('uz', 'broadcast_prompt'), {
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] },
@@ -317,7 +345,7 @@ export async function handleAdminBroadcastStart(bot, msg) {
   saveSession(msg.from.id, { current_state: 'ADMIN_BROADCAST_TEXT', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminBroadcastInput(bot, msg) {
+export async function handleAdminBroadcastInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const text = msg.text;
   if (!text) { await bot.sendMessage(msg.chat.id, '❌ Faqat matn qabul qilinadi.'); return; }
 
@@ -333,26 +361,28 @@ export async function handleAdminBroadcastInput(bot, msg) {
       },
     }
   );
-  const session = getSession(msg.from.id) || {};
+  const session = getSession(msg.from.id) ?? {};
   saveSession(msg.from.id, { ...session, current_state: 'ADMIN_BROADCAST_CONFIRM', last_message_id: sentMsg.message_id, state_data: { broadcast_text: text } });
 }
 
-export async function handleAdminBroadcastConfirm(bot, cbQuery) {
+export async function handleAdminBroadcastConfirm(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const chatId  = cbQuery.message.chat.id;
-  const session = getSession(cbQuery.from.id) || {};
+  const session = getSession(cbQuery.from.id) ?? {};
   const text    = session.state_data?.broadcast_text;
   if (!text) { await bot.answerCallbackQuery(cbQuery.id); clearSession(cbQuery.from.id); return; }
 
   await bot.answerCallbackQuery(cbQuery.id);
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: cbQuery.message.message_id }).catch(() => {});
 
-  const { rows: users } = await query('SELECT telegram_id FROM users WHERE NOT is_blocked AND is_verified = true');
+  const { rows: users } = await query<Pick<UserRow, 'telegram_id'>>('SELECT telegram_id FROM users WHERE NOT is_blocked AND is_verified = true');
   let sent = 0, failed = 0;
   const statusMsg = await bot.sendMessage(chatId, `⏳ Yuborilmoqda... 0/${users.length}`);
 
   for (let i = 0; i < users.length; i++) {
-    try { await bot.sendMessage(users[i].telegram_id, text, { parse_mode: 'HTML' }); sent++; }
-    catch (_) { failed++; }
+    const target = users[i];
+    if (!target) continue;
+    try { await bot.sendMessage(target.telegram_id, text, { parse_mode: 'HTML' }); sent++; }
+    catch { failed++; }
     if ((i + 1) % 20 === 0) {
       await bot.editMessageText(`⏳ Yuborilmoqda... ${i+1}/${users.length}`, { chat_id: chatId, message_id: statusMsg.message_id }).catch(() => {});
       await new Promise(r => setTimeout(r, 500));
@@ -367,8 +397,8 @@ export async function handleAdminBroadcastConfirm(bot, cbQuery) {
 }
 
 // ─── Kanallar ─────────────────────────────────────────────────────────────
-export async function handleAdminChannels(bot, msg) {
-  const { rows } = await query('SELECT * FROM subscription_channels WHERE is_active = true');
+export async function handleAdminChannels(bot: Bot, msg: Message): Promise<void> {
+  const { rows } = await query<SubscriptionChannelRow>('SELECT * FROM subscription_channels WHERE is_active = true');
   const list = rows.length
     ? rows.map((ch, i) => `${i+1}. <b>${ch.name}</b> — <code>${ch.tg_id}</code>`).join('\n')
     : '— Kanal yo\'q';
@@ -379,16 +409,16 @@ export async function handleAdminChannels(bot, msg) {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
-          ...rows.map(ch => [{ text: `❌ ${ch.name}`, callback_data: `admin:ch_del:${ch.id}` }]),
+          ...rows.map((ch): InlineKeyboardButton[] => [{ text: `❌ ${ch.name}`, callback_data: `admin:ch_del:${ch.id}` }]),
           [{ text: getText('uz', 'btn_add_channel'), callback_data: 'admin:ch_add' }],
         ],
       },
     }
   );
-  clearSession(msg.from.id);
+  if (msg.from) clearSession(msg.from.id);
 }
 
-export async function handleAdminChannelAdd(bot, cbQuery) {
+export async function handleAdminChannelAdd(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
   const sentMsg = await bot.sendMessage(cbQuery.message.chat.id, getText('uz', 'prompt_channel'), {
     reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] },
@@ -396,11 +426,16 @@ export async function handleAdminChannelAdd(bot, cbQuery) {
   saveSession(cbQuery.from.id, { current_state: 'ADMIN_CHANNEL_INPUT', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminChannelInput(bot, msg) {
+export async function handleAdminChannelInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const input = msg.text?.trim();
+  if (!input) {
+    await bot.sendMessage(msg.chat.id, getText('uz', 'channel_invalid'));
+    clearSession(msg.from.id);
+    return;
+  }
   try {
     const chat = await bot.getChat(input);
-    let url = chat.username
+    const url: string | null = chat.username
       ? `https://t.me/${chat.username}`
       : await bot.exportChatInviteLink(chat.id).catch(() => null);
     const tgId = String(chat.id);
@@ -412,21 +447,24 @@ export async function handleAdminChannelInput(bot, msg) {
 
     // Barcha verified userlarga kanal haqida xabar yuborish (background)
     broadcastNewChannel(bot, { tg_id: tgId, name, url }).catch(() => {});
-  } catch (_) {
+  } catch {
     await bot.sendMessage(msg.chat.id, getText('uz', 'channel_invalid'));
     clearSession(msg.from.id);
   }
 }
 
-async function broadcastNewChannel(bot, ch) {
-  const { rows: users } = await query(
+async function broadcastNewChannel(
+  bot: Bot,
+  ch: Pick<SubscriptionChannelRow, 'tg_id' | 'name' | 'url'>
+): Promise<void> {
+  const { rows: users } = await query<Pick<UserRow, 'telegram_id' | 'lang'>>(
     'SELECT telegram_id, lang FROM users WHERE is_verified = true AND NOT is_blocked'
   );
   if (!users.length) return;
 
-  const chBtn = { text: `📢 ${ch.name}` };
+  const chBtn: InlineKeyboardButton = { text: `📢 ${ch.name}` };
   if (ch.url && ch.url.startsWith('http')) chBtn.url = ch.url;
-  const kb = {
+  const kb: InlineKeyboardMarkup = {
     inline_keyboard: [
       [chBtn],
       [{ text: '✅ Obunani tekshirish', callback_data: 'check_sub' }],
@@ -435,6 +473,7 @@ async function broadcastNewChannel(bot, ch) {
 
   for (let i = 0; i < users.length; i++) {
     const u = users[i];
+    if (!u) continue;
     const lang = u.lang || 'uz';
     const text =
       lang === 'ru'
@@ -455,15 +494,15 @@ async function broadcastNewChannel(bot, ch) {
   }
 }
 
-export async function handleAdminChannelDel(bot, cbQuery) {
-  const id = parseInt(cbQuery.data.split(':')[2]);
+export async function handleAdminChannelDel(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const id = toInt((cbQuery.data ?? '').split(':')[2]);
   await query('DELETE FROM subscription_channels WHERE id = $1', [id]);
   await bot.answerCallbackQuery(cbQuery.id, { text: getText('uz', 'channel_deleted') });
   await handleAdminChannels(bot, cbQuery.message);
 }
 
 // ─── Sozlamalar menyusi ───────────────────────────────────────────────────
-export async function handleAdminSettings(bot, msg) {
+export async function handleAdminSettings(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const [minPayout, bonusDirect, spinMultiply] = await Promise.all([
     getSetting('min_payout', '5000'),
     getSetting('bonus_direct', '1000'),
@@ -487,19 +526,26 @@ export async function handleAdminSettings(bot, msg) {
   );
 }
 
-export async function handleAdminSettingSelect(bot, cbQuery) {
-  const key     = cbQuery.data.split(':')[2];
+interface SettingPrompt {
+  text_key: TextKey;
+  cur_key: TextKey;
+  cur_fmt: string;
+}
+
+const SETTING_PROMPTS: Record<SettingKey, SettingPrompt> = {
+  min_payout:    { text_key: 'min_payout_prompt',    cur_key: 'min_payout_current',    cur_fmt: 'min' },
+  bonus_direct:  { text_key: 'bonus_direct_prompt',  cur_key: 'bonus_direct_current',  cur_fmt: 'amount' },
+  spin_multiply: { text_key: 'spin_multiply_prompt', cur_key: 'spin_multiply_current', cur_fmt: 'multiply' },
+};
+
+export async function handleAdminSettingSelect(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const key     = (cbQuery.data ?? '').split(':')[2] ?? '';
   const userId  = cbQuery.from.id;
   const chatId  = cbQuery.message.chat.id;
   await bot.answerCallbackQuery(cbQuery.id);
 
-  const prompts = {
-    min_payout:    { text_key: 'min_payout_prompt',    cur_key: 'min_payout_current',    cur_fmt: 'min' },
-    bonus_direct:  { text_key: 'bonus_direct_prompt',  cur_key: 'bonus_direct_current',  cur_fmt: 'amount' },
-    spin_multiply: { text_key: 'spin_multiply_prompt', cur_key: 'spin_multiply_current', cur_fmt: 'multiply' },
-  };
-  const p = prompts[key];
-  if (!p) return;
+  if (!isSettingKey(key)) return;
+  const p = SETTING_PROMPTS[key];
 
   const cur     = await getSetting(key);
   const param   = { [p.cur_fmt]: key === 'spin_multiply' ? cur : fmt(cur) };
@@ -507,15 +553,18 @@ export async function handleAdminSettingSelect(bot, cbQuery) {
     getText('uz', p.cur_key, param) + '\n\n' + getText('uz', p.text_key),
     { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '❌ Bekor qilish', callback_data: 'admin:cancel' }]] } }
   );
-  saveSession(userId, { current_state: `ADMIN_SET_${key.toUpperCase()}`, last_message_id: sentMsg.message_id });
+  saveSession(userId, {
+    current_state: `ADMIN_SET_${key.toUpperCase() as Uppercase<SettingKey>}`,
+    last_message_id: sentMsg.message_id,
+  });
 }
 
-export async function handleAdminSettingInput(bot, msg, key) {
-  const val = parseInt(msg.text?.trim(), 10);
+export async function handleAdminSettingInput(bot: Bot, msg: MessageWithFrom, key: SettingKey): Promise<void> {
+  const val = parseInt((msg.text ?? '').trim(), 10);
   if (isNaN(val) || val <= 0) { await bot.sendMessage(msg.chat.id, getText('uz', 'min_payout_invalid')); return; }
 
   await setSetting(key, val);
-  const updates = {
+  const updates: Record<SettingKey, string> = {
     min_payout:    getText('uz', 'min_payout_updated',    { amount: fmt(val) }),
     bonus_direct:  getText('uz', 'bonus_direct_updated',  { amount: fmt(val) }),
     spin_multiply: getText('uz', 'spin_multiply_updated', { multiply: val   }),
@@ -525,7 +574,7 @@ export async function handleAdminSettingInput(bot, msg, key) {
 }
 
 // ─── Bekor qilish ─────────────────────────────────────────────────────────
-export async function handleAdminCancel(bot, cbQuery) {
+export async function handleAdminCancel(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
   await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: cbQuery.message.chat.id, message_id: cbQuery.message.message_id }).catch(() => {});
   clearSession(cbQuery.from.id);

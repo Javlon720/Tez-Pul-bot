@@ -5,6 +5,9 @@ import { connectWithRetry } from './shared/db.js';
 import { isAdmin } from './middleware/adminAuth.js';
 import { getSession } from './shared/session.js';
 import { routeMessage, routeCallback } from './router.js';
+import { errMessage } from './shared/utils.js';
+import { isSettingKey } from './services/settingsService.js';
+import type { CallbackQueryWithMessage, MessageWithFrom } from './types.js';
 
 import {
   handleAdminMenu, handleAdminStats, handleAdminUsers,
@@ -22,17 +25,16 @@ import {
   handleAdminTollBack,
 } from './handlers/admin/index.js';
 
-import {
-  handlePaymentRequest,
-  handlePayReqCard, handlePayReqName, handlePayReqAmount,
-  handlePayReqBack, handlePayReqEdit, handlePayReqConfirm, handlePayReqCancel,
-  handlePayReqCardInput, handlePayReqNameInput, handlePayReqAmountInput,
-} from './handlers/payment_request.js';
-
-async function main() {
+async function main(): Promise<void> {
   await connectWithRetry();
 
-  const bot = new TelegramBot(process.env.BOT_TOKEN, {
+  const token = process.env.BOT_TOKEN;
+  if (!token) {
+    console.error("[Bot] BOT_TOKEN .env faylida ko'rsatilmagan. Chiqilmoqda.");
+    process.exit(1);
+  }
+
+  const bot = new TelegramBot(token, {
     polling: {
       interval: 300,
       autoStart: false,
@@ -40,15 +42,16 @@ async function main() {
     },
   });
 
-  bot.on('polling_error', (err) => {
-    if (['ETIMEDOUT', 'ECONNRESET', 'EFATAL'].includes(err.code)) return;
+  bot.on('polling_error', (err: Error & { code?: string }) => {
+    if (err.code && ['ETIMEDOUT', 'ECONNRESET', 'EFATAL'].includes(err.code)) return;
     console.error('[Bot] Polling xato:', err.message);
   });
 
   // ── Xabarlar ─────────────────────────────────────────────────────────────
-  bot.on('message', async (msg) => {
+  bot.on('message', async (rawMsg) => {
     try {
-      if (!msg.from) return;
+      if (!rawMsg.from) return;
+      const msg    = rawMsg as MessageWithFrom;
       const userId = msg.from.id;
       const text   = msg.text || '';
 
@@ -74,25 +77,26 @@ async function main() {
         if (state === 'ADMIN_CHANNEL_INPUT')   { await handleAdminChannelInput(bot, msg); return; }
         if (state === 'ADMIN_TOLL_SCREENSHOT') { await handleAdminTollScreenshot(bot, msg); return; }
         if (state === 'ADMIN_TOLL_APPROVE')    { await handleAdminTollScreenshot(bot, msg); return; }
-        if (state?.startsWith('ADMIN_SET_'))   {
+        if (state?.startsWith('ADMIN_SET_')) {
           const key = state.replace('ADMIN_SET_', '').toLowerCase();
-          await handleAdminSettingInput(bot, msg, key);
+          if (isSettingKey(key)) await handleAdminSettingInput(bot, msg, key);
           return;
         }
       }
 
       await routeMessage(bot, msg);
     } catch (err) {
-      console.error('[Bot] Xabar xatosi:', err.message);
+      console.error('[Bot] Xabar xatosi:', errMessage(err));
     }
   });
 
   // ── Callback tugmalar ─────────────────────────────────────────────────────
-  bot.on('callback_query', async (cbQuery) => {
+  bot.on('callback_query', async (rawQuery) => {
     try {
-      if (!cbQuery.from) return;
-      const userId = cbQuery.from.id;
-      const data   = cbQuery.data || '';
+      if (!rawQuery.from || !rawQuery.message) return;
+      const cbQuery = rawQuery as CallbackQueryWithMessage;
+      const userId  = cbQuery.from.id;
+      const data    = cbQuery.data || '';
 
       if (isAdmin(userId)) {
         if (data === 'admin:cancel')             { await handleAdminCancel(bot, cbQuery); return; }
@@ -116,7 +120,7 @@ async function main() {
 
       await routeCallback(bot, cbQuery);
     } catch (err) {
-      console.error('[Bot] Callback xatosi:', err.message);
+      console.error('[Bot] Callback xatosi:', errMessage(err));
     }
   });
 

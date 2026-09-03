@@ -4,16 +4,19 @@ import { fmt } from '../shared/utils.js';
 import { getMinPayout, getBonusDirect, getSpinMultiply } from '../services/settingsService.js';
 import { getSession, saveSession } from '../shared/session.js';
 import { deletePrevMsg } from '../helpers.js';
+import type { Bot, MessageWithFrom, UserRow } from '../types.js';
 
-export async function handleInfo(bot, msg, user) {
+type TopRow = Pick<UserRow, 'first_name' | 'username' | 'total_referrals'>;
+
+export async function handleInfo(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId  = msg.chat.id;
-  const session = getSession(user.telegram_id) || {};
+  const session = getSession(msg.from.id) ?? {};
 
   const [bonus, minPayout, multiply] = await Promise.all([
     getBonusDirect(), getMinPayout(), getSpinMultiply(),
   ]);
 
-  const { rows: top } = await query(
+  const { rows: top } = await query<TopRow>(
     'SELECT first_name, username, total_referrals FROM users WHERE NOT is_blocked ORDER BY total_referrals DESC LIMIT 5'
   );
   const medals   = ['🥇','🥈','🥉','4️⃣','5️⃣'];
@@ -54,5 +57,5 @@ ${topLines}`;
 
   await deletePrevMsg(bot, chatId, session);
   const sentMsg = await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-  saveSession(user.telegram_id, { ...session, last_message_id: sentMsg.message_id });
+  saveSession(msg.from.id, { ...session, last_message_id: sentMsg.message_id });
 }

@@ -3,14 +3,17 @@ import { query } from '../shared/db.js';
 import getText from '../locales/index.js';
 import { fmt } from '../shared/utils.js';
 import { getBonusDirect } from '../services/settingsService.js';
+import type { Bot, MessageWithFrom, UserRow } from '../types.js';
 
-export async function handleShare(bot, msg, user) {
+type ReferralRow = Pick<UserRow, 'first_name' | 'username'>;
+
+export async function handleShare(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
   const lang  = user.lang || 'uz';
   const link  = `https://t.me/${global.BOT_USERNAME}?start=ref_${user.telegram_id}`;
   const bonus = await getBonusDirect();
 
   // Taklif qilinganlar ro'yxati
-  const { rows: refs } = await query(
+  const { rows: refs } = await query<ReferralRow>(
     `SELECT u.first_name, u.username
      FROM referrals r
      JOIN users u ON u.telegram_id = r.referred_id
@@ -19,7 +22,7 @@ export async function handleShare(bot, msg, user) {
     [user.telegram_id]
   );
 
-  let refSection = '';
+  let refSection: string;
   if (refs.length) {
     const lines = refs.map((r, i) =>
       `${i + 1}. ${r.first_name}${r.username ? ` (@${r.username})` : ''}`

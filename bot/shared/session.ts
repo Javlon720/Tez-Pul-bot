@@ -1,20 +1,27 @@
 'use strict';
 
-const store = new Map();
+import type { Session } from '../types.js';
+
+interface SessionEntry {
+  data: Session;
+  ts: number;
+}
+
+const store = new Map<number, SessionEntry>();
 const TTL   = 30 * 60 * 1000; // 30 daqiqa
 
-export function getSession(id) {
+export function getSession(id: number): Session | null {
   const e = store.get(id);
   if (!e) return null;
   if (Date.now() - e.ts > TTL) { store.delete(id); return null; }
   return e.data;
 }
 
-export function saveSession(id, data) {
+export function saveSession(id: number, data: Session): void {
   store.set(id, { data, ts: Date.now() });
 }
 
-export function clearSession(id) {
+export function clearSession(id: number): void {
   store.delete(id);
 }
 

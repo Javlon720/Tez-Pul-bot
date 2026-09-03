@@ -3,7 +3,7 @@ import getText from './locales/index.js';
 import { getSession } from './shared/session.js';
 import { upsertUser, getFreshUser, touchActive } from './services/userService.js';
 import { checkSubscription, buildSubKeyboard } from './middleware/subscription.js';
-import { showMainMenu } from './helpers.js';
+import type { Bot, CallbackQueryWithMessage, MessageWithFrom, SessionState } from './types.js';
 
 import { handleStart, handleLangSelect, handleCheckSub, handleCaptchaCallback } from './handlers/start.js';
 import { handlePhoneContact, handlePhoneText }                  from './handlers/phone.js';
@@ -22,10 +22,9 @@ import {
   handlePayReqCardInput, handlePayReqNameInput, handlePayReqAmountInput,
 } from './handlers/payment_request.js';
 
-const SKIP_SUB = new Set(['LANG_SELECTION', 'PHONE', 'CHANNEL_CHECK']);
+const SKIP_SUB = new Set<SessionState>(['LANG_SELECTION', 'PHONE', 'CHANNEL_CHECK']);
 
-export async function routeMessage(bot, msg) {
-  if (!msg.from) return;
+export async function routeMessage(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const telegramId = msg.from.id;
   const chatId     = msg.chat.id;
 
@@ -50,12 +49,12 @@ export async function routeMessage(bot, msg) {
 
   // Telefon holati
   if (state === 'PHONE') {
-    if (msg.contact)                              return handlePhoneContact(bot, msg, user);
-    if (msg.text && !msg.text.startsWith('/'))   return handlePhoneText(bot, msg, user);
+    if (msg.contact)                            return handlePhoneContact(bot, msg, user);
+    if (msg.text && !msg.text.startsWith('/'))  return handlePhoneText(bot, msg, user);
     return;
   }
 
-  if (SKIP_SUB.has(state) || !user.is_verified) return;
+  if ((state && SKIP_SUB.has(state)) || !user.is_verified) return;
 
   // Obuna tekshiruvi
   const ok = await checkSubscription(bot, telegramId);
@@ -76,22 +75,21 @@ export async function routeMessage(bot, msg) {
   // Spin bet input
   if (state === 'WAITING_SPIN_BET' && msg.text && !msg.text.startsWith('/')) {
     const fresh = await getFreshUser(telegramId);
+    if (!fresh) return;
     return handleSpinBetInput(bot, msg, fresh, session);
   }
 
   const text = msg.text || '';
-  const t    = (key) => getText(lang, key);
 
-  if (text === t('btn_pay_req')) return handlePaymentRequest(bot, msg, user);
-  if (text === t('btn_share'))   return handleShare(bot, msg, user);
-  if (text === t('btn_info'))    return handleInfo(bot, msg, user);
-  if (text === t('btn_report'))  { const f = await getFreshUser(telegramId); return handleReport(bot, msg, f); }
-  if (text === t('btn_spin'))    { const f = await getFreshUser(telegramId); return handleSpinEntry(bot, msg, f); }
-  if (text === t('btn_lang'))    return handleLangChange(bot, msg, user);
+  if (text === getText(lang, 'btn_pay_req')) return handlePaymentRequest(bot, msg, user);
+  if (text === getText(lang, 'btn_share'))   return handleShare(bot, msg, user);
+  if (text === getText(lang, 'btn_info'))    return handleInfo(bot, msg);
+  if (text === getText(lang, 'btn_report'))  { const f = await getFreshUser(telegramId); if (f) return handleReport(bot, msg, f); return; }
+  if (text === getText(lang, 'btn_spin'))    { const f = await getFreshUser(telegramId); if (f) return handleSpinEntry(bot, msg, f); return; }
+  if (text === getText(lang, 'btn_lang'))    return handleLangChange(bot, msg, user);
 }
 
-export async function routeCallback(bot, cbQuery) {
-  if (!cbQuery.from) return;
+export async function routeCallback(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const telegramId = cbQuery.from.id;
   const data       = cbQuery.data || '';
 

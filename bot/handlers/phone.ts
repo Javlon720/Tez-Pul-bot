@@ -4,8 +4,15 @@ import getText from '../locales/index.js';
 import { invalidateUser } from '../services/userService.js';
 import { isUzPhone, normalizePhone } from '../shared/utils.js';
 import { showChannelCheck } from './start.js';
+import type { Bot, Lang, MessageWithFrom, UserRow } from '../types.js';
 
-async function savePhone(bot, chatId, telegramId, lang, rawPhone) {
+async function savePhone(
+  bot: Bot,
+  chatId: number,
+  telegramId: number,
+  lang: Lang,
+  rawPhone: string | null | undefined
+): Promise<void> {
   const normalized = normalizePhone(rawPhone);
   if (!normalized || !isUzPhone(normalized)) {
     await bot.sendMessage(chatId, getText(lang, 'phone_wrong_format'));
@@ -19,10 +26,10 @@ async function savePhone(bot, chatId, telegramId, lang, rawPhone) {
   await showChannelCheck(bot, chatId, telegramId, lang);
 }
 
-export async function handlePhoneContact(bot, msg, user) {
+export async function handlePhoneContact(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
   await savePhone(bot, msg.chat.id, msg.from.id, user.lang || 'uz', msg.contact?.phone_number);
 }
 
-export async function handlePhoneText(bot, msg, user) {
+export async function handlePhoneText(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
   await savePhone(bot, msg.chat.id, msg.from.id, user.lang || 'uz', msg.text);
 }

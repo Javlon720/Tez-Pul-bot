@@ -1,30 +1,37 @@
 'use strict';
 import { query } from '../shared/db.js';
-import { fmt } from '../shared/utils.js';
+import { fmt, toInt } from '../shared/utils.js';
 import { getSession, saveSession, clearSession } from '../shared/session.js';
 import { getMinPayout } from '../services/settingsService.js';
+import type {
+  Bot, CallbackQueryWithMessage, InlineKeyboardButton, InlineKeyboardMarkup,
+  MessageWithFrom, Numeric, SessionStateData, UserRow,
+} from '../types.js';
 
-function maskCard(raw) {
+/** Formada to'ldiriladigan maydonlar */
+type FormData = Pick<SessionStateData, 'card' | 'name' | 'amount' | 'max_amount'>;
+
+function maskCard(raw: string): string {
   const d = raw.replace(/\D/g, '');
   if (d.length !== 16) return raw;
   return `${d.slice(0, 4)} **** **** ${d.slice(12)}`;
 }
 
-function fmtCard(raw) {
+function fmtCard(raw: string): string {
   const d = raw.replace(/\D/g, '');
   if (d.length !== 16) return raw;
   return `${d.slice(0, 4)} ${d.slice(4, 8)} ${d.slice(8, 12)} ${d.slice(12)}`;
 }
 
 // ── Forma matnini yaratish ────────────────────────────────────────────────────
-async function formText(data = {}) {
+async function formText(data: FormData = {}): Promise<{ text: string; reply_markup: InlineKeyboardMarkup }> {
   const min = await getMinPayout();
   const cardLine   = data.card   ? `✅ 💳 ${maskCard(data.card)}`   : `⬜️ 💳 Karta raqami`;
   const nameLine   = data.name   ? `✅ 👤 ${data.name}`             : `⬜️ 👤 Ism Familiya`;
   const amountLine = data.amount ? `✅ 💰 ${fmt(data.amount)} so'm` : `⬜️ 💰 To'lov miqdori`;
-  const allFilled  = data.card && data.name && data.amount;
+  const allFilled  = Boolean(data.card && data.name && data.amount);
 
-  const kb = [
+  const kb: InlineKeyboardButton[][] = [
     [{ text: cardLine,   callback_data: 'pay_req:card'   }],
     [{ text: nameLine,   callback_data: 'pay_req:name'   }],
     [{ text: amountLine, callback_data: 'pay_req:amount' }],
@@ -44,7 +51,12 @@ async function formText(data = {}) {
 }
 
 // ── Forma xabarini yuborish yoki edit qilish ──────────────────────────────────
-async function renderForm(bot, chatId, msgId, data) {
+async function renderForm(
+  bot: Bot,
+  chatId: number,
+  msgId: number | null | undefined,
+  data: FormData
+): Promise<number> {
   const { text, reply_markup } = await formText(data);
   if (msgId) {
     const edited = await bot.editMessageText(text, {
@@ -57,7 +69,13 @@ async function renderForm(bot, chatId, msgId, data) {
 }
 
 // ── Maydon so'rash xabari (forma o'zi edit bo'ladi) ───────────────────────────
-async function promptField(bot, chatId, msgId, promptText, backData) {
+async function promptField(
+  bot: Bot,
+  chatId: number,
+  msgId: number | undefined,
+  promptText: string,
+  backData: string
+): Promise<void> {
   await bot.editMessageText(promptText, {
     chat_id: chatId, message_id: msgId, parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [[{ text: '⬅️ Ortga', callback_data: backData }]] },
@@ -65,20 +83,20 @@ async function promptField(bot, chatId, msgId, promptText, backData) {
 }
 
 // ── Entry ─────────────────────────────────────────────────────────────────────
-export async function handlePaymentRequest(bot, msg, user) {
+export async function handlePaymentRequest(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
   await query(
     `UPDATE payment_requests SET status = 'cancelled' WHERE user_id = $1 AND status = 'pending'`,
     [user.telegram_id]
   );
 
-  const { rows } = await query(
+  const { rows } = await query<Pick<UserRow, 'saved_card' | 'saved_full_name'>>(
     'SELECT saved_card, saved_full_name FROM users WHERE telegram_id = $1',
     [user.telegram_id]
   );
-  const saved = rows[0] || {};
-  const preData = {
-    card: saved.saved_card   || null,
-    name: saved.saved_full_name || null,
+  const saved = rows[0];
+  const preData: FormData = {
+    card: saved?.saved_card ?? undefined,
+    name: saved?.saved_full_name ?? undefined,
   };
 
   const newMsgId = await renderForm(bot, msg.chat.id, null, preData);
@@ -90,9 +108,9 @@ export async function handlePaymentRequest(bot, msg, user) {
 }
 
 // ── Maydon tugmalari ──────────────────────────────────────────────────────────
-export async function handlePayReqCard(bot, cbQuery) {
+export async function handlePayReqCard(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
-  const session = getSession(cbQuery.from.id) || {};
+  const session = getSession(cbQuery.from.id) ?? {};
   const msgId   = cbQuery.message.message_id;
 
   await promptField(bot, cbQuery.message.chat.id, msgId,
@@ -102,9 +120,9 @@ export async function handlePayReqCard(bot, cbQuery) {
   saveSession(cbQuery.from.id, { ...session, current_state: 'PAY_REQ_CARD', form_msg_id: msgId });
 }
 
-export async function handlePayReqName(bot, cbQuery) {
+export async function handlePayReqName(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
-  const session = getSession(cbQuery.from.id) || {};
+  const session = getSession(cbQuery.from.id) ?? {};
   const msgId   = cbQuery.message.message_id;
 
   await promptField(bot, cbQuery.message.chat.id, msgId,
@@ -114,13 +132,13 @@ export async function handlePayReqName(bot, cbQuery) {
   saveSession(cbQuery.from.id, { ...session, current_state: 'PAY_REQ_NAME', form_msg_id: msgId });
 }
 
-export async function handlePayReqAmount(bot, cbQuery, user) {
+export async function handlePayReqAmount(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
-  const session = getSession(cbQuery.from.id) || {};
+  const session = getSession(cbQuery.from.id) ?? {};
   const msgId   = cbQuery.message.message_id;
   const min     = await getMinPayout();
-  const { rows } = await query('SELECT balance FROM users WHERE telegram_id = $1', [user.telegram_id]);
-  const avail   = parseInt(rows[0]?.balance || 0);
+  const { rows } = await query<{ balance: Numeric }>('SELECT balance FROM users WHERE telegram_id = $1', [user.telegram_id]);
+  const avail   = toInt(rows[0]?.balance);
 
   await promptField(bot, cbQuery.message.chat.id, msgId,
     `💰 <b>Chiqarib olmoqchi bo'lgan summani kiriting:</b>\n\n` +
@@ -137,25 +155,25 @@ export async function handlePayReqAmount(bot, cbQuery, user) {
 }
 
 // ── Ortga ─────────────────────────────────────────────────────────────────────
-export async function handlePayReqBack(bot, cbQuery) {
+export async function handlePayReqBack(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
-  const session = getSession(cbQuery.from.id) || {};
+  const session = getSession(cbQuery.from.id) ?? {};
   const msgId   = cbQuery.message.message_id;
-  const data    = session.state_data || {};
+  const data    = session.state_data ?? {};
 
   const newMsgId = await renderForm(bot, cbQuery.message.chat.id, msgId, data);
   saveSession(cbQuery.from.id, { ...session, current_state: 'PAY_REQ_FORM', form_msg_id: newMsgId });
 }
 
 // ── Tahrirlash ────────────────────────────────────────────────────────────────
-export async function handlePayReqEdit(bot, cbQuery) {
+export async function handlePayReqEdit(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id, { text: 'Tahrirlash uchun maydonni bosing' });
 }
 
 // ── Tasdiqlash ────────────────────────────────────────────────────────────────
-export async function handlePayReqConfirm(bot, cbQuery, user) {
-  const session = getSession(cbQuery.from.id) || {};
-  const { card, name, amount } = session.state_data || {};
+export async function handlePayReqConfirm(bot: Bot, cbQuery: CallbackQueryWithMessage, user: UserRow): Promise<void> {
+  const session = getSession(cbQuery.from.id) ?? {};
+  const { card, name, amount } = session.state_data ?? {};
   if (!card || !name || !amount) {
     await bot.answerCallbackQuery(cbQuery.id, { text: "❌ Barcha maydonlarni to'ldiring", show_alert: true });
     return;
@@ -191,7 +209,7 @@ export async function handlePayReqConfirm(bot, cbQuery, user) {
 }
 
 // ── Bekor ─────────────────────────────────────────────────────────────────────
-export async function handlePayReqCancel(bot, cbQuery) {
+export async function handlePayReqCancel(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   await bot.answerCallbackQuery(cbQuery.id);
   await bot.editMessageText('❌ Bekor qilindi.', {
     chat_id: cbQuery.message.chat.id,
@@ -202,14 +220,13 @@ export async function handlePayReqCancel(bot, cbQuery) {
 }
 
 // ── Matn inputlari ────────────────────────────────────────────────────────────
-export async function handlePayReqCardInput(bot, msg) {
-  const session = getSession(msg.from.id) || {};
+export async function handlePayReqCardInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session = getSession(msg.from.id) ?? {};
   const digits  = (msg.text || '').replace(/\D/g, '');
 
   await bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
 
   if (digits.length !== 16) {
-    await bot.answerCallbackQuery?.();
     await bot.editMessageText(
       `💳 <b>Plastik karta raqamini kiriting:</b>\n<i>Misol: 8600 0000 0000 0000</i>\n\n❌ 16 ta raqam kiriting!`,
       {
@@ -220,13 +237,13 @@ export async function handlePayReqCardInput(bot, msg) {
     return;
   }
 
-  const data     = { ...session.state_data, card: digits };
+  const data: FormData = { ...session.state_data, card: digits };
   const newMsgId = await renderForm(bot, msg.chat.id, session.form_msg_id, data);
   saveSession(msg.from.id, { ...session, current_state: 'PAY_REQ_FORM', form_msg_id: newMsgId, state_data: data });
 }
 
-export async function handlePayReqNameInput(bot, msg) {
-  const session = getSession(msg.from.id) || {};
+export async function handlePayReqNameInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session = getSession(msg.from.id) ?? {};
   const name    = (msg.text || '').trim();
 
   await bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
@@ -242,20 +259,20 @@ export async function handlePayReqNameInput(bot, msg) {
     return;
   }
 
-  const data     = { ...session.state_data, name };
+  const data: FormData = { ...session.state_data, name };
   const newMsgId = await renderForm(bot, msg.chat.id, session.form_msg_id, data);
   saveSession(msg.from.id, { ...session, current_state: 'PAY_REQ_FORM', form_msg_id: newMsgId, state_data: data });
 }
 
-export async function handlePayReqAmountInput(bot, msg) {
-  const session   = getSession(msg.from.id) || {};
+export async function handlePayReqAmountInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
+  const session   = getSession(msg.from.id) ?? {};
   const amount    = parseInt((msg.text || '').trim(), 10);
   const min       = await getMinPayout();
-  const maxAmount = session.state_data?.max_amount || 0;
+  const maxAmount = session.state_data?.max_amount ?? 0;
 
   await bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
 
-  let errText = null;
+  let errText: string | null = null;
   if (isNaN(amount) || amount <= 0) errText = '❌ Noto\'g\'ri summa!';
   else if (amount < min)            errText = `❌ Minimal: <b>${fmt(min)} so'm</b>`;
   else if (amount > maxAmount)      errText = `❌ Balansda: <b>${fmt(maxAmount)} so'm</b>`;
@@ -271,7 +288,7 @@ export async function handlePayReqAmountInput(bot, msg) {
     return;
   }
 
-  const data     = { ...session.state_data, amount };
+  const data: FormData = { ...session.state_data, amount };
   const newMsgId = await renderForm(bot, msg.chat.id, session.form_msg_id, data);
   saveSession(msg.from.id, { ...session, current_state: 'PAY_REQ_FORM', form_msg_id: newMsgId, state_data: data });
 }

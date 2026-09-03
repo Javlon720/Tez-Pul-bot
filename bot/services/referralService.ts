@@ -3,17 +3,18 @@ import { query, transaction } from '../shared/db.js';
 import { invalidateUser } from './userService.js';
 import { getBonusDirect } from './settingsService.js';
 import getText from '../locales/index.js';
-import { fmt } from '../shared/utils.js';
+import { errMessage, fmt } from '../shared/utils.js';
+import type { Bot, UserRow } from '../types.js';
 
 // Vaqtinchalik kutayotgan referallar (userId → referrerId)
-const pending = new Map();
+const pending = new Map<number, number>();
 
-export function storePending(userId, referrerId) {
+export function storePending(userId: number, referrerId: number): void {
   pending.set(userId, referrerId);
   setTimeout(() => pending.delete(userId), 60 * 60 * 1000); // 1 soatdan keyin o'chadi
 }
 
-export async function processReferral(bot, userId) {
+export async function processReferral(bot: Bot, userId: number): Promise<void> {
   const referrerId = pending.get(userId);
   if (!referrerId) return;
   pending.delete(userId); // ikki marta ishlashini oldini olish
@@ -21,7 +22,7 @@ export async function processReferral(bot, userId) {
   const bonus = await getBonusDirect();
 
   try {
-    const { rows: refRows } = await query(
+    const { rows: refRows } = await query<Pick<UserRow, 'telegram_id' | 'lang' | 'balance'>>(
       'SELECT telegram_id, lang, balance FROM users WHERE telegram_id = $1 AND NOT is_blocked',
       [referrerId]
     );
@@ -29,7 +30,7 @@ export async function processReferral(bot, userId) {
 
     let processed = false;
     await transaction(async (client) => {
-      const existing = await client.query(
+      const existing = await client.query<{ id: number }>(
         'SELECT id FROM referrals WHERE referrer_id = $1 AND referred_id = $2',
         [referrerId, userId]
       );
@@ -61,12 +62,12 @@ export async function processReferral(bot, userId) {
     invalidateUser(referrerId);
 
     const [updRef, newUser] = await Promise.all([
-      query('SELECT balance, lang FROM users WHERE telegram_id = $1', [referrerId]),
-      query('SELECT first_name FROM users WHERE telegram_id = $1', [userId]),
+      query<Pick<UserRow, 'balance' | 'lang'>>('SELECT balance, lang FROM users WHERE telegram_id = $1', [referrerId]),
+      query<Pick<UserRow, 'first_name'>>('SELECT first_name FROM users WHERE telegram_id = $1', [userId]),
     ]);
 
-    if (updRef.rows.length) {
-      const r = updRef.rows[0];
+    const r = updRef.rows[0];
+    if (r) {
       bot.sendMessage(referrerId, getText(r.lang || 'uz', 'referral_notify', {
         name:    newUser.rows[0]?.first_name || 'User',
         bonus:   fmt(bonus),
@@ -74,6 +75,6 @@ export async function processReferral(bot, userId) {
       })).catch(() => {});
     }
   } catch (err) {
-    console.error('[Referral] Xato:', err.message);
+    console.error('[Referral] Xato:', errMessage(err));
   }
 }

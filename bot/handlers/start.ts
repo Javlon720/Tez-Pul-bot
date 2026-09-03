@@ -6,14 +6,25 @@ import { invalidateUser } from '../services/userService.js';
 import { checkSubscription, buildSubKeyboard, invalidateSubCache } from '../middleware/subscription.js';
 import { storePending, processReferral } from '../services/referralService.js';
 import { showMainMenu, deletePrevMsg } from '../helpers.js';
+import { isLang } from '../shared/utils.js';
+import type {
+  Bot, CallbackQueryWithMessage, InlineKeyboardButton, Lang, MessageWithFrom, UserRow,
+} from '../types.js';
 
 // ─── Captcha timer'lari (telegramId → timeoutId) ──────────────────────────
-const captchaTimers = new Map();
+const captchaTimers = new Map<number, NodeJS.Timeout>();
 
-function genCaptcha() {
+interface Captcha {
+  a: number;
+  op: string;
+  b: number;
+  answer: number;
+}
+
+function genCaptcha(): Captcha {
   const ops = ['+', '-', '×'];
-  const op  = ops[Math.floor(Math.random() * ops.length)];
-  let a, b, answer;
+  const op  = ops[Math.floor(Math.random() * ops.length)] ?? '+';
+  let a: number, b: number, answer: number;
   if (op === '+') {
     a = Math.floor(Math.random() * 20) + 1;
     b = Math.floor(Math.random() * 20) + 1;
@@ -30,9 +41,9 @@ function genCaptcha() {
   return { a, op, b, answer };
 }
 
-function genChoices(answer) {
-  const used = new Set([answer]);
-  const wrongs = [];
+function genChoices(answer: number): number[] {
+  const used = new Set<number>([answer]);
+  const wrongs: number[] = [];
   let tries = 0;
   while (wrongs.length < 3 && tries < 60) {
     tries++;
@@ -44,22 +55,24 @@ function genChoices(answer) {
   const all = [answer, ...wrongs];
   for (let i = all.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [all[i], all[j]] = [all[j], all[i]];
+    const ai = all[i] as number;
+    all[i] = all[j] as number;
+    all[j] = ai;
   }
   return all;
 }
 
-export function clearCaptchaTimer(telegramId) {
+export function clearCaptchaTimer(telegramId: number): void {
   const id = captchaTimers.get(telegramId);
   if (id) { clearTimeout(id); captchaTimers.delete(telegramId); }
 }
 
-async function sendCaptcha(bot, chatId, telegramId, lang) {
+async function sendCaptcha(bot: Bot, chatId: number, telegramId: number, lang: Lang): Promise<void> {
   const { a, op, b, answer } = genCaptcha();
   const choices = genChoices(answer);
 
   // 2 × 2 inline tugmalar
-  const inline_keyboard = [
+  const inline_keyboard: InlineKeyboardButton[][] = [
     choices.slice(0, 2).map(n => ({ text: String(n), callback_data: `captcha:${n}` })),
     choices.slice(2, 4).map(n => ({ text: String(n), callback_data: `captcha:${n}` })),
   ];
@@ -76,7 +89,7 @@ async function sendCaptcha(bot, chatId, telegramId, lang) {
     state_data:      { answer, lang },
   });
 
-  const timerId = setTimeout(async () => {
+  const timerId = setTimeout(() => {
     captchaTimers.delete(telegramId);
     bot.editMessageText(
       getText(lang, 'captcha_expired'),
@@ -88,13 +101,17 @@ async function sendCaptcha(bot, chatId, telegramId, lang) {
   captchaTimers.set(telegramId, timerId);
 }
 
-export async function handleCaptchaCallback(bot, cbQuery, user) {
+export async function handleCaptchaCallback(
+  bot: Bot,
+  cbQuery: CallbackQueryWithMessage,
+  user: UserRow | null
+): Promise<void> {
   const telegramId = cbQuery.from.id;
   const chatId     = cbQuery.message.chat.id;
-  const session    = getSession(telegramId) || {};
-  const { answer, lang: sessionLang } = session.state_data || {};
+  const session    = getSession(telegramId) ?? {};
+  const { answer, lang: sessionLang } = session.state_data ?? {};
   const lang   = sessionLang || user?.lang || 'uz';
-  const chosen = parseInt(cbQuery.data.split(':')[1], 10);
+  const chosen = parseInt((cbQuery.data ?? '').split(':')[1] ?? '', 10);
 
   if (isNaN(chosen) || chosen !== answer) {
     await bot.answerCallbackQuery(cbQuery.id, { text: getText(lang, 'captcha_wrong'), show_alert: true });
@@ -121,12 +138,12 @@ export async function handleCaptchaCallback(bot, cbQuery, user) {
   saveSession(telegramId, { current_state: 'PHONE', last_message_id: sentMsg.message_id });
 }
 
-export async function handleStart(bot, msg) {
+export async function handleStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId     = msg.chat.id;
   const telegramId = msg.from.id;
   const from       = msg.from;
 
-  const { rows } = await query(
+  const { rows } = await query<UserRow>(
     `INSERT INTO users (telegram_id, username, first_name, last_name)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (telegram_id) DO UPDATE SET
@@ -148,15 +165,15 @@ export async function handleStart(bot, msg) {
   // Avval captcha timer'ni tozala (agar oldingi urinish bo'lsa)
   clearCaptchaTimer(telegramId);
 
-  const session = getSession(telegramId) || {};
+  const session = getSession(telegramId);
   await deletePrevMsg(bot, chatId, session);
 
   // Referal havolani parse qil
   const payload = (msg.text || '').split(' ')[1] || '';
   if (payload.startsWith('ref_')) {
-    const refId = parseInt(payload.slice(4));
+    const refId = parseInt(payload.slice(4), 10);
     if (!isNaN(refId) && refId !== telegramId && !user.referred_by && !user.is_verified) {
-      const { rows: refRows } = await query(
+      const { rows: refRows } = await query<Pick<UserRow, 'telegram_id'>>(
         'SELECT telegram_id FROM users WHERE telegram_id = $1 AND NOT is_blocked', [refId]
       );
       if (refRows.length) storePending(telegramId, refId);
@@ -182,11 +199,11 @@ export async function handleStart(bot, msg) {
   saveSession(telegramId, { current_state: 'LANG_SELECTION', last_message_id: sentMsg.message_id });
 }
 
-export async function handleLangSelect(bot, cbQuery) {
+export async function handleLangSelect(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const chatId     = cbQuery.message.chat.id;
   const telegramId = cbQuery.from.id;
-  const lang       = cbQuery.data.split(':')[1];
-  if (!['uz', 'ru', 'en'].includes(lang)) { await bot.answerCallbackQuery(cbQuery.id); return; }
+  const lang       = (cbQuery.data ?? '').split(':')[1];
+  if (!isLang(lang)) { await bot.answerCallbackQuery(cbQuery.id); return; }
 
   await query('UPDATE users SET lang = $1 WHERE telegram_id = $2', [lang, telegramId]);
   invalidateUser(telegramId);
@@ -197,13 +214,13 @@ export async function handleLangSelect(bot, cbQuery) {
   await sendCaptcha(bot, chatId, telegramId, lang);
 }
 
-export async function handleCheckSub(bot, cbQuery) {
+export async function handleCheckSub(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const chatId     = cbQuery.message.chat.id;
   const telegramId = cbQuery.from.id;
 
-  const { rows } = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-  if (!rows.length) { await bot.answerCallbackQuery(cbQuery.id); return; }
+  const { rows } = await query<UserRow>('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
   const user = rows[0];
+  if (!user) { await bot.answerCallbackQuery(cbQuery.id); return; }
   const lang = user.lang || 'uz';
 
   invalidateSubCache(telegramId);
@@ -220,11 +237,12 @@ export async function handleCheckSub(bot, cbQuery) {
   await processReferral(bot, telegramId);
   await bot.answerCallbackQuery(cbQuery.id, { text: getText(lang, 'channel_subscribed') });
 
-  const { rows: fresh } = await query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-  await showMainMenu(bot, chatId, fresh[0]);
+  const { rows: fresh } = await query<UserRow>('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+  const freshUser = fresh[0];
+  if (freshUser) await showMainMenu(bot, chatId, freshUser);
 }
 
-export async function showChannelCheck(bot, chatId, telegramId, lang) {
+export async function showChannelCheck(bot: Bot, chatId: number, telegramId: number, lang: Lang): Promise<void> {
   const kb      = await buildSubKeyboard(lang);
   const sentMsg = await bot.sendMessage(chatId, getText(lang, 'channel_not_subscribed'), { reply_markup: kb });
   saveSession(telegramId, { current_state: 'CHANNEL_CHECK', last_message_id: sentMsg.message_id });

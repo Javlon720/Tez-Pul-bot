@@ -4,13 +4,14 @@ import getText from '../locales/index.js';
 import { fmt } from '../shared/utils.js';
 import { getSession, saveSession } from '../shared/session.js';
 import { deletePrevMsg } from '../helpers.js';
+import type { Bot, MessageWithFrom, Numeric, UserRow } from '../types.js';
 
-export async function handleReport(bot, msg, user) {
+export async function handleReport(bot: Bot, msg: MessageWithFrom, user: UserRow): Promise<void> {
   const chatId  = msg.chat.id;
   const lang    = user.lang || 'uz';
-  const session = getSession(user.telegram_id) || {};
+  const session = getSession(msg.from.id) ?? {};
 
-  const { rows } = await query(
+  const { rows } = await query<{ total: Numeric }>(
     'SELECT COALESCE(SUM(prize_amount), 0) AS total FROM spin_sessions WHERE user_id = $1',
     [user.telegram_id]
   );
@@ -27,5 +28,5 @@ export async function handleReport(bot, msg, user) {
     }),
     { parse_mode: 'HTML' }
   );
-  saveSession(user.telegram_id, { ...session, last_message_id: sentMsg.message_id });
+  saveSession(msg.from.id, { ...session, last_message_id: sentMsg.message_id });
 }

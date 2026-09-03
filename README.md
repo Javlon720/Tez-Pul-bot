@@ -4,33 +4,39 @@ Telegram referal boti. Foydalanuvchilar do'stlarini taklif qilib pul ishlashadi 
 
 ## Tuzilishi
 
+Loyiha to'liq **TypeScript** da yozilgan (`strict` rejim yoqilgan).
+
 ```
 bot/
-├── index.js               # Kirish nuqtasi, polling
-├── router.js              # User xabar/callback yo'naltirish
-├── helpers.js             # showMainMenu, deletePrevMsg
+├── index.ts               # Kirish nuqtasi, polling
+├── router.ts              # User xabar/callback yo'naltirish
+├── helpers.ts             # showMainMenu, deletePrevMsg
+├── types.ts               # Umumiy tiplar: UserRow, Session, Lang, Bot ...
 ├── shared/
-│   ├── db.js              # PostgreSQL pool, query, transaction
-│   ├── session.js         # In-memory session (30 daqiqa TTL)
-│   ├── cache.js           # User cache (5 daqiqa TTL)
-│   └── utils.js           # fmt, isUzPhone, normalizePhone
+│   ├── db.ts              # PostgreSQL pool, query<T>, transaction<T>
+│   ├── session.ts         # In-memory session (30 daqiqa TTL)
+│   ├── cache.ts           # User cache (5 daqiqa TTL)
+│   ├── logger.ts          # Winston logger
+│   └── utils.ts           # fmt, toInt, errMessage, isUzPhone, normalizePhone
 ├── middleware/
-│   ├── adminAuth.js       # isAdmin() tekshiruvi
-│   └── subscription.js    # Kanal obuna tekshiruvi + cache
+│   ├── adminAuth.ts       # isAdmin() tekshiruvi
+│   └── subscription.ts    # Kanal obuna tekshiruvi + cache
 ├── services/
-│   ├── userService.js     # getUser, upsertUser, invalidateUser
-│   ├── settingsService.js # getSetting/setSetting + qulaylik funksiyalar
-│   └── referralService.js # storePending, processReferral
+│   ├── userService.ts     # getUser, upsertUser, invalidateUser
+│   ├── settingsService.ts # getSetting/setSetting + qulaylik funksiyalar
+│   └── referralService.ts # storePending, processReferral
 ├── handlers/
-│   ├── admin/index.js     # Barcha admin funksiyalar
-│   ├── start.js           # /start, til tanlash, obuna tekshiruvi
-│   ├── phone.js           # Telefon raqam qabul qilish
-│   ├── share.js           # Referal havola
-│   ├── info.js            # Bot haqida + top referallar
-│   ├── report.js          # Foydalanuvchi hisoboti
-│   ├── language.js        # Til o'zgartirish
-│   └── spin.js            # O'yinlar (slot, futbol, basketbol, zar, darts)
-├── locales/index.js       # uz / ru / en tarjimalar
+│   ├── admin/index.ts     # Barcha admin funksiyalar
+│   ├── admin/tolls.ts     # To'lov murojaatlari
+│   ├── start.ts           # /start, til tanlash, captcha, obuna tekshiruvi
+│   ├── phone.ts           # Telefon raqam qabul qilish
+│   ├── share.ts           # Referal havola
+│   ├── info.ts            # Bot haqida + top referallar
+│   ├── report.ts          # Foydalanuvchi hisoboti
+│   ├── language.ts        # Til o'zgartirish
+│   ├── payment_request.ts # To'lovga murojaat formasi
+│   └── spin.ts            # O'yinlar (slot, futbol, basketbol, zar, darts)
+├── locales/index.ts       # uz / ru / en tarjimalar (TextKey tipi bilan)
 └── db/schema.sql          # PostgreSQL jadvallar
 ```
 
@@ -46,9 +52,15 @@ npm install
 psql -U postgres -c "CREATE DATABASE tezpulbot;"
 npm run db:init
 
+# TypeScript ni kompilyatsiya qilib ishga tushirish
+npm run build
 npm start
-# yoki development uchun:
+
+# yoki development uchun (tsx watch, build shart emas):
 npm run dev
+
+# faqat tiplarni tekshirish
+npm run typecheck
 ```
 
 ## .env o'zgaruvchilari

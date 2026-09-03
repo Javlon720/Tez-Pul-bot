@@ -1,15 +1,18 @@
 'use strict';
 
-import { query, transaction } from '../shared/db.js';
+import { query } from '../shared/db.js';
 import getText from '../locales/index.js';
-import { formatNumber, timeAgo, chunk } from '../shared/utils.js';
+import { formatNumber } from '../shared/utils.js';
 import { getSession, saveSession, clearSession } from '../shared/session.js';
 import { getMinPayout, setSetting } from '../services/settingsService.js';
 import { invalidateUser } from '../services/userService.js';
-import logger from '../shared/logger.js';
+import type {
+  Bot, CallbackQueryWithMessage, CountRow, InlineKeyboardButton,
+  Message, MessageWithFrom, SubscriptionChannelRow, SumRow, UserRow,
+} from '../types.js';
 
 // ─── Show main admin menu ──────────────────────────────────────────────────
-export async function handleAdminMenu(bot, msg) {
+export async function handleAdminMenu(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
@@ -28,30 +31,30 @@ export async function handleAdminMenu(bot, msg) {
 }
 
 // ─── Stats ─────────────────────────────────────────────────────────────────
-export async function handleAdminStats(bot, msg) {
+export async function handleAdminStats(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
 
   const [totalRes, activeRes, todayRes, balRes, paidRes] = await Promise.all([
-    query('SELECT COUNT(*) AS c FROM users'),
-    query('SELECT COUNT(*) AS c FROM users WHERE last_active > NOW() - INTERVAL \'24 hours\''),
-    query('SELECT COUNT(*) AS c FROM users WHERE created_at > NOW() - INTERVAL \'24 hours\''),
-    query('SELECT COALESCE(SUM(balance), 0) AS s FROM users'),
-    query('SELECT COALESCE(SUM(paid_amount), 0) AS s FROM users'),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users'),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users WHERE last_active > NOW() - INTERVAL \'24 hours\''),
+    query<CountRow>('SELECT COUNT(*) AS c FROM users WHERE created_at > NOW() - INTERVAL \'24 hours\''),
+    query<SumRow>('SELECT COALESCE(SUM(balance), 0) AS s FROM users'),
+    query<SumRow>('SELECT COALESCE(SUM(paid_amount), 0) AS s FROM users'),
   ]);
 
   await bot.sendMessage(chatId,
     `📊 <b>Umumiy Statistika</b>\n\n` +
-    `👥 Jami foydalanuvchilar: <b>${totalRes.rows[0].c}</b>\n` +
-    `🟢 Faol (24s): <b>${activeRes.rows[0].c}</b>\n` +
-    `📅 Bugun yangi: <b>${todayRes.rows[0].c}</b>\n\n` +
-    `💰 Jami balanslar: <b>${formatNumber(balRes.rows[0].s)} so'm</b>\n` +
-    `✅ To'langan: <b>${formatNumber(paidRes.rows[0].s)} so'm</b>`,
+    `👥 Jami foydalanuvchilar: <b>${totalRes.rows[0]?.c ?? 0}</b>\n` +
+    `🟢 Faol (24s): <b>${activeRes.rows[0]?.c ?? 0}</b>\n` +
+    `📅 Bugun yangi: <b>${todayRes.rows[0]?.c ?? 0}</b>\n\n` +
+    `💰 Jami balanslar: <b>${formatNumber(balRes.rows[0]?.s)} so'm</b>\n` +
+    `✅ To'langan: <b>${formatNumber(paidRes.rows[0]?.s)} so'm</b>`,
     { parse_mode: 'HTML' }
   );
 }
 
 // ─── Bonus: step 1 – ask who ───────────────────────────────────────────────
-export async function handleAdminBonusStart(bot, msg) {
+export async function handleAdminBonusStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
@@ -65,27 +68,27 @@ export async function handleAdminBonusStart(bot, msg) {
   saveSession(userId, { current_state: 'ADMIN_BONUS_TARGET', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminBonusTargetInput(bot, msg) {
+export async function handleAdminBonusTargetInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  const text   = msg.text?.trim();
+  const text   = msg.text?.trim() ?? '';
 
   let targetRes;
   if (/^\d+$/.test(text)) {
-    targetRes = await query('SELECT * FROM users WHERE telegram_id = $1', [parseInt(text)]);
+    targetRes = await query<UserRow>('SELECT * FROM users WHERE telegram_id = $1', [parseInt(text, 10)]);
   } else if (text.startsWith('@')) {
-    targetRes = await query('SELECT * FROM users WHERE username = $1', [text.slice(1)]);
+    targetRes = await query<UserRow>('SELECT * FROM users WHERE username = $1', [text.slice(1)]);
   } else {
     await bot.sendMessage(chatId, '❌ ID (raqam) yoki @username kiriting.');
     return;
   }
 
-  if (!targetRes.rows.length) {
+  const target = targetRes.rows[0];
+  if (!target) {
     await bot.sendMessage(chatId, getText('uz', 'bonus_not_found'));
     return;
   }
 
-  const target   = targetRes.rows[0];
   const sentMsg  = await bot.sendMessage(chatId,
     getText('uz', 'bonus_amount', { user: target.first_name + (target.username ? ` @${target.username}` : '') }),
     {
@@ -94,7 +97,7 @@ export async function handleAdminBonusTargetInput(bot, msg) {
     }
   );
 
-  const session = getSession(userId) || {};
+  const session = getSession(userId) ?? {};
   saveSession(userId, {
     ...session,
     current_state:   'ADMIN_BONUS_AMOUNT',
@@ -103,11 +106,11 @@ export async function handleAdminBonusTargetInput(bot, msg) {
   });
 }
 
-export async function handleAdminBonusAmountInput(bot, msg) {
+export async function handleAdminBonusAmountInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId  = msg.chat.id;
   const userId  = msg.from.id;
-  const session = getSession(userId) || {};
-  const amount  = parseInt(msg.text?.trim(), 10);
+  const session = getSession(userId) ?? {};
+  const amount  = parseInt((msg.text ?? '').trim(), 10);
 
   if (isNaN(amount) || amount <= 0) {
     await bot.sendMessage(chatId, getText('uz', 'bonus_invalid'));
@@ -128,7 +131,7 @@ export async function handleAdminBonusAmountInput(bot, msg) {
   );
   invalidateUser(targetId);
 
-  const updRes = await query('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
+  const updRes = await query<Pick<UserRow, 'balance' | 'lang'>>('SELECT balance, lang FROM users WHERE telegram_id = $1', [targetId]);
   const upd    = updRes.rows[0];
 
   await bot.sendMessage(chatId,
@@ -152,7 +155,7 @@ export async function handleAdminBonusAmountInput(bot, msg) {
 }
 
 // ─── Broadcast ─────────────────────────────────────────────────────────────
-export async function handleAdminBroadcastStart(bot, msg) {
+export async function handleAdminBroadcastStart(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
 
@@ -163,7 +166,7 @@ export async function handleAdminBroadcastStart(bot, msg) {
   saveSession(userId, { current_state: 'ADMIN_BROADCAST_TEXT', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminBroadcastInput(bot, msg) {
+export async function handleAdminBroadcastInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId  = msg.chat.id;
   const userId  = msg.from.id;
   const text    = msg.text;
@@ -182,7 +185,7 @@ export async function handleAdminBroadcastInput(bot, msg) {
     }
   );
 
-  const session = getSession(userId) || {};
+  const session = getSession(userId) ?? {};
   saveSession(userId, {
     ...session,
     current_state:   'ADMIN_BROADCAST_CONFIRM',
@@ -191,10 +194,10 @@ export async function handleAdminBroadcastInput(bot, msg) {
   });
 }
 
-export async function handleAdminBroadcastConfirm(bot, cbQuery) {
+export async function handleAdminBroadcastConfirm(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const chatId  = cbQuery.message.chat.id;
   const userId  = cbQuery.from.id;
-  const session = getSession(userId) || {};
+  const session = getSession(userId) ?? {};
   const text    = session.state_data?.broadcast_text;
 
   if (!text) { await bot.answerCallbackQuery(cbQuery.id); clearSession(userId); return; }
@@ -204,17 +207,19 @@ export async function handleAdminBroadcastConfirm(bot, cbQuery) {
     chat_id: chatId, message_id: cbQuery.message.message_id,
   }).catch(() => {});
 
-  const usersRes = await query('SELECT telegram_id FROM users WHERE NOT is_blocked AND is_verified = true');
+  const usersRes = await query<Pick<UserRow, 'telegram_id'>>('SELECT telegram_id FROM users WHERE NOT is_blocked AND is_verified = true');
   const users    = usersRes.rows;
   let sent = 0, failed = 0;
 
   const statusMsg = await bot.sendMessage(chatId, `⏳ Yuborilmoqda... 0/${users.length}`);
 
   for (let i = 0; i < users.length; i++) {
+    const target = users[i];
+    if (!target) continue;
     try {
-      await bot.sendMessage(users[i].telegram_id, text, { parse_mode: 'HTML' });
+      await bot.sendMessage(target.telegram_id, text, { parse_mode: 'HTML' });
       sent++;
-    } catch (_) {
+    } catch {
       failed++;
     }
     if ((i + 1) % 20 === 0) {
@@ -234,16 +239,15 @@ export async function handleAdminBroadcastConfirm(bot, cbQuery) {
 }
 
 // ─── Channels management ───────────────────────────────────────────────────
-export async function handleAdminChannels(bot, msg) {
+export async function handleAdminChannels(bot: Bot, msg: Message): Promise<void> {
   const chatId = msg.chat.id;
-  const userId = msg.from.id;
 
-  const chRes  = await query('SELECT * FROM subscription_channels WHERE is_active = true');
+  const chRes  = await query<SubscriptionChannelRow>('SELECT * FROM subscription_channels WHERE is_active = true');
   const list   = chRes.rows.length
     ? chRes.rows.map((ch, i) => `${i + 1}. <b>${ch.name}</b> — ${ch.tg_id}`).join('\n')
     : '— Kanal yo\'q';
 
-  const delButtons = chRes.rows.map(ch => [
+  const delButtons = chRes.rows.map((ch): InlineKeyboardButton[] => [
     { text: `❌ ${ch.name}`, callback_data: `admin:ch_del:${ch.id}` },
   ]);
 
@@ -259,10 +263,10 @@ export async function handleAdminChannels(bot, msg) {
       },
     }
   );
-  clearSession(userId);
+  if (msg.from) clearSession(msg.from.id);
 }
 
-export async function handleAdminChannelAdd(bot, cbQuery) {
+export async function handleAdminChannelAdd(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const chatId = cbQuery.message.chat.id;
   const userId = cbQuery.from.id;
   await bot.answerCallbackQuery(cbQuery.id);
@@ -273,10 +277,16 @@ export async function handleAdminChannelAdd(bot, cbQuery) {
   saveSession(userId, { current_state: 'ADMIN_CHANNEL_INPUT', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminChannelInput(bot, msg) {
+export async function handleAdminChannelInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const input  = msg.text?.trim();
+
+  if (!input) {
+    await bot.sendMessage(chatId, getText('uz', 'channel_invalid'));
+    clearSession(userId);
+    return;
+  }
 
   try {
     const chat = await bot.getChat(input);
@@ -289,15 +299,15 @@ export async function handleAdminChannelInput(bot, msg) {
       [tgId, name, url]
     );
     await bot.sendMessage(chatId, getText('uz', 'channel_added'));
-  } catch (_) {
+  } catch {
     await bot.sendMessage(chatId, getText('uz', 'channel_invalid'));
   }
 
   clearSession(userId);
 }
 
-export async function handleAdminChannelDel(bot, cbQuery) {
-  const id = parseInt(cbQuery.data.split(':')[2]);
+export async function handleAdminChannelDel(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
+  const id = parseInt((cbQuery.data ?? '').split(':')[2] ?? '', 10);
   await query('DELETE FROM subscription_channels WHERE id = $1', [id]);
   await bot.answerCallbackQuery(cbQuery.id, { text: getText('uz', 'channel_deleted') });
   // Refresh channels list
@@ -305,7 +315,7 @@ export async function handleAdminChannelDel(bot, cbQuery) {
 }
 
 // ─── Min payout ────────────────────────────────────────────────────────────
-export async function handleAdminMinPayout(bot, msg) {
+export async function handleAdminMinPayout(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId  = msg.chat.id;
   const userId  = msg.from.id;
   const current = await getMinPayout();
@@ -321,10 +331,10 @@ export async function handleAdminMinPayout(bot, msg) {
   saveSession(userId, { current_state: 'ADMIN_MIN_PAYOUT', last_message_id: sentMsg.message_id });
 }
 
-export async function handleAdminMinPayoutInput(bot, msg) {
+export async function handleAdminMinPayoutInput(bot: Bot, msg: MessageWithFrom): Promise<void> {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  const amount = parseInt(msg.text?.trim(), 10);
+  const amount = parseInt((msg.text ?? '').trim(), 10);
 
   if (isNaN(amount) || amount <= 0) {
     await bot.sendMessage(chatId, getText('uz', 'min_payout_invalid'));
@@ -340,7 +350,7 @@ export async function handleAdminMinPayoutInput(bot, msg) {
 }
 
 // ─── Cancel ────────────────────────────────────────────────────────────────
-export async function handleAdminCancel(bot, cbQuery) {
+export async function handleAdminCancel(bot: Bot, cbQuery: CallbackQueryWithMessage): Promise<void> {
   const userId = cbQuery.from.id;
   const chatId = cbQuery.message.chat.id;
   await bot.answerCallbackQuery(cbQuery.id);

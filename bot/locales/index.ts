@@ -1,5 +1,7 @@
 'use strict';
 
+import type { Lang } from '../types.js';
+
 const uz = {
   // Umumiy
   error:   '❌ Xato yuz berdi. Iltimos, qayta urinib ko\'ring.',
@@ -90,9 +92,13 @@ const uz = {
   action_cancelled: '❌ Bekor qilindi.',
   btn_back:         '🔙 Orqaga',
   btn_cancel:       '❌ Bekor qilish',
-};
+} as const;
 
-const ru = {
+/** `uz` lug'atidagi barcha kalitlar — boshqa tillar shu kalitlarni to'ldiradi */
+export type TextKey = keyof typeof uz;
+type LocaleMap = Record<TextKey, string>;
+
+const ru: LocaleMap = {
   ...uz,
   select_lang: '🌐 Выберите язык:',
   blocked:     '🚫 Вы заблокированы.',
@@ -111,7 +117,7 @@ const ru = {
   user_penalty_notify: '⚠️ С вашего счёта списано <b>{amount} сум</b>.\n💳 Новый баланс: <b>{balance} сум</b>',
 };
 
-const en = {
+const en: LocaleMap = {
   ...uz,
   select_lang: '🌐 Select language:',
   blocked:     '🚫 You are blocked.',
@@ -130,11 +136,17 @@ const en = {
   user_penalty_notify: '⚠️ <b>{amount} UZS</b> was deducted from your account.\n💳 New balance: <b>{balance} UZS</b>',
 };
 
-const locales = { uz, ru, en };
+const locales: Record<Lang, LocaleMap> = { uz, ru, en };
 
-export default function getText(lang, key, params = {}) {
-  const map  = locales[lang] || locales.uz;
-  let   text = map[key] !== undefined ? String(map[key]) : key;
+export type TextParams = Record<string, string | number | null | undefined>;
+
+export default function getText(
+  lang: Lang | null | undefined,
+  key: TextKey,
+  params: TextParams = {}
+): string {
+  const map  = locales[lang ?? 'uz'] ?? locales.uz;
+  let   text = map[key] !== undefined ? String(map[key]) : String(key);
   for (const [k, v] of Object.entries(params)) {
     text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v ?? ''));
   }
